@@ -125,12 +125,15 @@ async def create_campaign(request: Request):
     fb_api_version = "v16.0"
     url = f"https://graph.facebook.com/{fb_api_version}/act_{data.account_id}/campaigns"
     
+    # Converte o orçamento para a menor unidade da moeda (centavos)
+    spend_cap = int(data.budget * 100)
+    
     # Monta o payload com os dados para a API do Facebook, incluindo "special_ad_categories"
     payload = {
         "name": data.campaign_name,
         "objective": data.objective,
         "status": "PAUSED",           # Inicialmente pausada
-        "spend_cap": int(data.budget),
+        "spend_cap": spend_cap,       # Valor em centavos
         "start_time": data.initial_date,
         "end_time": data.final_date,
         "content_type": data.content_type,
