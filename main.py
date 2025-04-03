@@ -26,7 +26,7 @@ app.add_middleware(
 def check_account_balance(account_id: str, token: str, fb_api_version: str, spend_cap: int):
     """
     Verifica se a conta possui saldo suficiente.
-    Se o campo 'balance' for encontrado e for menor que spend_cap,
+    Se o campo 'balance' não for encontrado ou se for menor que spend_cap,
     lança uma exceção com status 133.
     """
     url = f"https://graph.facebook.com/{fb_api_version}/act_{account_id}?fields=balance&access_token={token}"
@@ -37,12 +37,17 @@ def check_account_balance(account_id: str, token: str, fb_api_version: str, spen
         data = response.json()
         logging.debug(f"Resposta da verificação de saldo: {data}")
         if "balance" in data:
-            balance = int(data["balance"])
+            try:
+                balance = int(data["balance"])
+            except Exception as e:
+                logging.error("Erro ao converter o saldo para inteiro.", exc_info=True)
+                raise HTTPException(status_code=133, detail="Saldo insuficiente para a campanha")
             logging.debug(f"Saldo atual da conta: {balance}")
             if balance < spend_cap:
                 raise HTTPException(status_code=133, detail="Saldo insuficiente para a campanha")
         else:
-            logging.warning("Campo 'balance' não encontrado na resposta da conta.")
+            logging.error("Campo 'balance' não encontrado na resposta da conta. Considerando saldo insuficiente.")
+            raise HTTPException(status_code=133, detail="Saldo insuficiente para a campanha")
     else:
         logging.error("Erro ao verificar saldo da conta.")
         raise HTTPException(status_code=400, detail="Erro ao verificar saldo da conta")
