@@ -102,7 +102,8 @@ async def create_campaign(request: Request):
     fb_api_version = "v16.0"
     url = f"https://graph.facebook.com/{fb_api_version}/act_{data.account_id}/campaigns"
     
-    # Monta o payload com os dados para a API do Facebook
+    # Monta o payload com os dados para a API do Facebook,
+    # incluindo o parâmetro obrigatório "special_ad_categories"
     payload = {
         "name": data.campaign_name,
         "objective": "LINK_CLICKS",  # Exemplo; ajuste conforme necessário
@@ -122,7 +123,8 @@ async def create_campaign(request: Request):
         "min_salary": data.min_salary,
         "max_salary": data.max_salary,
         "devices": data.devices,
-        "access_token": data.token
+        "access_token": data.token,
+        "special_ad_categories": []  # Adiciona o parâmetro obrigatório (vazio se não houver categoria especial)
     }
     
     logging.debug(f"Payload enviado para a API do Facebook: {payload}")
