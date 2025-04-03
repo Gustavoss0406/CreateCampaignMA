@@ -2,6 +2,7 @@ import logging
 import sys
 import os
 import requests
+from datetime import datetime, timedelta
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, field_validator
@@ -178,7 +179,20 @@ async def create_campaign(request: Request):
     else:
         genders = []
     
-    # Configura o targeting com geolocalização global e plataformas válidas
+    # Ajusta as datas do Ad Set para garantir pelo menos 24 horas de veiculação
+    try:
+        start_dt = datetime.strptime(data.initial_date, "%m/%d/%Y")
+        end_dt = datetime.strptime(data.final_date, "%m/%d/%Y")
+        if (end_dt - start_dt) < timedelta(days=1):
+            end_dt = start_dt + timedelta(days=1)
+        ad_set_start = start_dt.strftime("%m/%d/%Y")
+        ad_set_end = end_dt.strftime("%m/%d/%Y")
+    except Exception as e:
+        logging.warning("Não foi possível processar as datas; usando valores originais.")
+        ad_set_start = data.initial_date
+        ad_set_end = data.final_date
+    
+    # Configura o targeting com geolocalização usando GLOBAL_COUNTRIES e plataformas válidas
     targeting_spec = {
         "geo_locations": {"countries": GLOBAL_COUNTRIES},
         "genders": genders,
@@ -195,8 +209,8 @@ async def create_campaign(request: Request):
         "optimization_goal": "REACH",
         "bid_amount": 100,  # Lance de exemplo (em centavos)
         "targeting": targeting_spec,
-        "start_time": data.initial_date,
-        "end_time": data.final_date,
+        "start_time": ad_set_start,
+        "end_time": ad_set_end,
         "access_token": data.token
     }
     
@@ -270,6 +284,7 @@ async def create_campaign(request: Request):
         logging.error("Erro ao criar o Anúncio via API do Facebook", exc_info=True)
         raise HTTPException(status_code=400, detail=f"Erro ao criar o Anúncio: {str(e)}")
     
+    # Constrói um link para o Ads Manager para visualização da campanha
     campaign_link = f"https://www.facebook.com/adsmanager/manage/campaigns?act={ad_account_id}&campaign_ids={campaign_id}"
     
     return {
