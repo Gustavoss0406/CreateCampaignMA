@@ -23,7 +23,13 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Lista fixa de plataformas permitidas para publisher_platforms
+# Lista representativa de códigos de país válidos (formato ISO) para direcionamento global
+GLOBAL_COUNTRIES = [
+    "US", "CA", "GB", "AU", "DE", "FR", "BR", "IN", "MX", "IT",
+    "ES", "NL", "SE", "NO", "DK", "FI", "CH", "JP", "KR", "SG"
+]
+
+# Plataformas válidas para posicionamento (publisher_platforms)
 PUBLISHER_PLATFORMS = ["facebook", "instagram", "audience_network", "messenger"]
 
 class CampaignRequest(BaseModel):
@@ -172,13 +178,13 @@ async def create_campaign(request: Request):
     else:
         genders = []
     
-    # Configura o targeting com geolocalização usando uma lista representativa de países
+    # Configura o targeting com geolocalização global e plataformas válidas
     targeting_spec = {
-        "geo_locations": {"countries": PUBLISHER_PLATFORMS},  # Usando a lista fixa
+        "geo_locations": {"countries": GLOBAL_COUNTRIES},
         "genders": genders,
-        "age_min": data.target_age,  # Usando target_age como mínimo (ajuste se necessário)
+        "age_min": data.target_age,  # Utiliza target_age como mínimo (ajuste se necessário)
         "age_max": data.target_age,
-        "publisher_platforms": PUBLISHER_PLATFORMS  # Define as plataformas válidas
+        "publisher_platforms": PUBLISHER_PLATFORMS
     }
     
     ad_set_payload = {
@@ -264,7 +270,6 @@ async def create_campaign(request: Request):
         logging.error("Erro ao criar o Anúncio via API do Facebook", exc_info=True)
         raise HTTPException(status_code=400, detail=f"Erro ao criar o Anúncio: {str(e)}")
     
-    # Constrói um link para o Ads Manager para visualização da campanha
     campaign_link = f"https://www.facebook.com/adsmanager/manage/campaigns?act={ad_account_id}&campaign_ids={campaign_id}"
     
     return {
