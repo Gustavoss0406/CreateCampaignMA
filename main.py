@@ -26,8 +26,8 @@ app.add_middleware(
 def check_account_balance(account_id: str, token: str, fb_api_version: str, spend_cap: int):
     """
     Verifica se a conta possui saldo suficiente.
-    Se o campo 'balance' for encontrado e for menor que spend_cap,
-    lança uma exceção com status 133.
+    Se o campo 'balance' não for encontrado ou se for menor que spend_cap,
+    lança uma exceção com status 402 (Payment Required).
     """
     url = f"https://graph.facebook.com/{fb_api_version}/act_{account_id}?fields=balance&access_token={token}"
     logging.debug(f"Verificando saldo da conta: {url}")
@@ -37,12 +37,17 @@ def check_account_balance(account_id: str, token: str, fb_api_version: str, spen
         data = response.json()
         logging.debug(f"Resposta da verificação de saldo: {data}")
         if "balance" in data:
-            balance = int(data["balance"])
+            try:
+                balance = int(data["balance"])
+            except Exception as e:
+                logging.error("Erro ao converter o saldo para inteiro.", exc_info=True)
+                raise HTTPException(status_code=402, detail="Saldo insuficiente para a campanha")
             logging.debug(f"Saldo atual da conta: {balance}")
             if balance < spend_cap:
-                raise HTTPException(status_code=133, detail="Saldo insuficiente para a campanha")
+                raise HTTPException(status_code=402, detail="Saldo insuficiente para a campanha")
         else:
-            logging.warning("Campo 'balance' não encontrado na resposta da conta.")
+            logging.error("Campo 'balance' não encontrado na resposta da conta. Considerando saldo insuficiente.")
+            raise HTTPException(status_code=402, detail="Saldo insuficiente para a campanha")
     else:
         logging.error("Erro ao verificar saldo da conta.")
         raise HTTPException(status_code=400, detail="Erro ao verificar saldo da conta")
@@ -51,7 +56,7 @@ class CampaignRequest(BaseModel):
     account_id: str            # ID da conta do Facebook
     token: str                 # Token de 60 dias
     campaign_name: str = ""      # Nome da campanha
-    objective: str = ""  # Objetivo da campanha (valor padrão se não for enviado)
+    objective: str = "OUTCOME_TRAFFIC"  # Objetivo da campanha (valor padrão se não for enviado)
     content_type: str = ""       # Tipo de conteúdo (carrossel, single image, video)
     content: str = ""            # URL da imagem (para single image) ou outro conteúdo
     images: list[str] = []       # Lista de URLs (para carrossel)
@@ -120,7 +125,6 @@ class CampaignRequest(BaseModel):
     @field_validator("images", mode="before")
     def clean_images(cls, v):
         if isinstance(v, list):
-            # Remove espaços e ponto-e-vírgulas ao final de cada URL, se existirem
             cleaned = [s.strip().rstrip(";") if isinstance(s, str) else s for s in v]
             logging.debug(f"URLs de imagens após limpeza: {cleaned}")
             return cleaned
@@ -129,16 +133,11 @@ class CampaignRequest(BaseModel):
 @app.post("/create_campaign")
 async def create_campaign(request: Request):
     try:
-        # Captura o corpo bruto da requisição e exibe no log
         body_bytes = await request.body()
         body_str = body_bytes.decode("utf-8")
         logging.debug(f"Raw request body: {body_str}")
-
-        # Parse do JSON e log dos dados
         data_dict = await request.json()
         logging.debug(f"Parsed request body as JSON: {data_dict}")
-
-        # Validação com o modelo Pydantic
         data = CampaignRequest(**data_dict)
         logging.debug(f"CampaignRequest parsed: {data}")
     except Exception as e:
@@ -148,13 +147,11 @@ async def create_campaign(request: Request):
     fb_api_version = "v16.0"
     url = f"https://graph.facebook.com/{fb_api_version}/act_{data.account_id}/campaigns"
     
-    # Converte o orçamento para a menor unidade da moeda (centavos)
     spend_cap = int(data.budget * 100)
     
-    # Verifica o saldo da conta antes de criar a campanha
+    # Verifica o saldo da conta
     check_account_balance(data.account_id, data.token, fb_api_version, spend_cap)
     
-    # Monta o payload com os dados para a API do Facebook
     payload = {
         "name": data.campaign_name,
         "objective": data.objective,
@@ -175,7 +172,7 @@ async def create_campaign(request: Request):
         "max_salary": data.max_salary,
         "devices": data.devices,
         "access_token": data.token,
-        "special_ad_categories": []  # Lista vazia se não houver categoria especial
+        "special_ad_categories": []
     }
     
     logging.debug(f"Payload enviado para a API do Facebook: {payload}")
