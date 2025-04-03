@@ -191,7 +191,6 @@ async def create_campaign(request: Request):
         raise HTTPException(status_code=400, detail=f"Erro ao criar a campanha: {str(e)}")
     
     # --- Criação do Ad Set ---
-    # Mapeia target_sex para códigos: 1 para masculino, 2 para feminino.
     if data.target_sex.lower() == "male":
         genders = [1]
     elif data.target_sex.lower() == "female":
@@ -199,12 +198,9 @@ async def create_campaign(request: Request):
     else:
         genders = []
     
-    # Ajusta as datas do Ad Set: converte para timestamps Unix e garante um período mínimo de 25 horas.
     try:
-        # Supondo o formato MM/DD/YYYY
         start_dt = datetime.strptime(data.initial_date, "%m/%d/%Y")
         end_dt = datetime.strptime(data.final_date, "%m/%d/%Y")
-        # Se o período informado for menor que 25 horas, ajusta para 25 horas
         if (end_dt - start_dt) < timedelta(hours=25):
             end_dt = start_dt + timedelta(hours=25)
         ad_set_start = int(start_dt.timestamp())
@@ -214,7 +210,6 @@ async def create_campaign(request: Request):
         ad_set_start = data.initial_date
         ad_set_end = data.final_date
     
-    # Configura o targeting com geolocalização e plataformas válidas
     targeting_spec = {
         "geo_locations": {"countries": GLOBAL_COUNTRIES},
         "genders": genders,
@@ -223,21 +218,21 @@ async def create_campaign(request: Request):
         "publisher_platforms": PUBLISHER_PLATFORMS
     }
     
-    # Obtém o ID da página disponível a partir do token para uso nos campos dsa
+    # Obtemos o ID da página disponível para uso nos campos DSA
     page_id = get_page_id(data.token)
     
     ad_set_payload = {
         "name": f"Ad Set for {data.campaign_name}",
         "campaign_id": campaign_id,
-        "daily_budget": spend_cap,  # Para fins de teste, usando o mesmo valor
+        "daily_budget": spend_cap,
         "billing_event": "IMPRESSIONS",
         "optimization_goal": "REACH",
-        "bid_amount": 100,  # Lance de exemplo (em centavos)
+        "bid_amount": 100,
         "targeting": targeting_spec,
         "start_time": ad_set_start,
         "end_time": ad_set_end,
-        "dsa_beneficiary": page_id,  # Beneficiário (pode ser o mesmo da página disponível)
-        "dsa_payor": page_id,        # Pagador (utiliza o mesmo valor)
+        "dsa_beneficiary": page_id,
+        "dsa_payor": page_id,
         "access_token": data.token
     }
     
@@ -257,16 +252,21 @@ async def create_campaign(request: Request):
         raise HTTPException(status_code=400, detail=f"Erro ao criar o Ad Set: {str(e)}")
     
     # --- Criação do Ad Creative ---
+    # Construímos o payload do Ad Creative, removendo o campo caption se não for uma URL.
+    link_data = {
+        "message": data.description,
+        "link": data.content if data.content else "https://www.example.com",
+        "picture": data.images[0] if data.images else ""
+    }
+    # Se data.keywords for uma URL, incluímos; caso contrário, omitimos
+    if data.keywords.lower().startswith("http"):
+        link_data["caption"] = data.keywords
+    
     ad_creative_payload = {
         "name": f"Ad Creative for {data.campaign_name}",
         "object_story_spec": {
             "page_id": page_id,
-            "link_data": {
-                "message": data.description,
-                "link": data.content if data.content else "https://www.example.com",
-                "caption": data.keywords,
-                "picture": data.images[0] if data.images else ""
-            }
+            "link_data": link_data
         },
         "access_token": data.token
     }
