@@ -129,10 +129,11 @@ async def create_campaign(request: Request):
     spend_cap = int(data.budget * 100)
     
     # Monta o payload com os dados para a API do Facebook, incluindo "special_ad_categories"
+    # Status definido como "ACTIVE" para ativar a campanha automaticamente
     payload = {
         "name": data.campaign_name,
         "objective": data.objective,
-        "status": "PAUSED",           # Inicialmente pausada
+        "status": "ACTIVE",           # Campanha ativada automaticamente
         "spend_cap": spend_cap,       # Valor em centavos
         "start_time": data.initial_date,
         "end_time": data.final_date,
