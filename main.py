@@ -23,12 +23,8 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Lista de países representativa para direcionamento global.
-# Em produção, considere utilizar uma lista completa dos códigos ISO desejados.
-GLOBAL_COUNTRIES = [
-    "US", "CA", "GB", "AU", "DE", "FR", "BR", "IN", "MX", "IT",
-    "ES", "NL", "SE", "NO", "DK", "FI", "CH", "JP", "KR", "SG"
-]
+# Lista fixa de plataformas permitidas para publisher_platforms
+PUBLISHER_PLATFORMS = ["facebook", "instagram", "audience_network", "messenger"]
 
 class CampaignRequest(BaseModel):
     account_id: str             # ID da conta do Facebook
@@ -49,7 +45,7 @@ class CampaignRequest(BaseModel):
     target_age: int = 0         # Faixa etária (se informado como valor único)
     min_salary: float = 0.0     # Salário mínimo
     max_salary: float = 0.0     # Salário máximo
-    devices: list[str] = []     # Dispositivos (ex.: ["Smartphone", "Desktop"])
+    devices: list[str] = []     # Dispositivos (campo enviado, mas não usado no targeting)
 
     @field_validator("objective", mode="before")
     def validate_objective(cls, v):
@@ -126,7 +122,7 @@ async def create_campaign(request: Request):
     ad_account_id = data.account_id
     campaign_url = f"https://graph.facebook.com/{fb_api_version}/act_{ad_account_id}/campaigns"
     
-    # Converte o orçamento para a menor unidade da moeda (centavos)
+    # Converte o orçamento para centavos
     spend_cap = int(data.budget * 100)
     
     # --- Criação da Campanha ---
@@ -168,7 +164,7 @@ async def create_campaign(request: Request):
         raise HTTPException(status_code=400, detail=f"Erro ao criar a campanha: {str(e)}")
     
     # --- Criação do Ad Set ---
-    # Mapeia target_sex para códigos de gênero: 1 para masculino, 2 para feminino.
+    # Mapeia target_sex para códigos: 1 para masculino, 2 para feminino.
     if data.target_sex.lower() == "male":
         genders = [1]
     elif data.target_sex.lower() == "female":
@@ -176,13 +172,13 @@ async def create_campaign(request: Request):
     else:
         genders = []
     
-    # Configura o targeting com geolocalização global
+    # Configura o targeting com geolocalização usando uma lista representativa de países
     targeting_spec = {
-        "geo_locations": {"countries": GLOBAL_COUNTRIES},  # Lista de países representativa para targeting global
+        "geo_locations": {"countries": PUBLISHER_PLATFORMS},  # Usando a lista fixa
         "genders": genders,
-        "age_min": data.target_age,  # Utiliza target_age como mínimo (ajuste conforme necessário)
+        "age_min": data.target_age,  # Usando target_age como mínimo (ajuste se necessário)
         "age_max": data.target_age,
-        "publisher_platforms": data.devices  # Ajuste conforme necessário
+        "publisher_platforms": PUBLISHER_PLATFORMS  # Define as plataformas válidas
     }
     
     ad_set_payload = {
