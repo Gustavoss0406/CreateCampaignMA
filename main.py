@@ -79,10 +79,19 @@ class CampaignRequest(BaseModel):
                 raise ValueError(f"max_salary inválido: {v}") from e
         return v
 
+    @field_validator("images", mode="before")
+    def clean_images(cls, v):
+        if isinstance(v, list):
+            # Remove espaços e pontos-e-vírgulas ao final de cada URL, se existirem
+            cleaned = [s.strip().rstrip(";") if isinstance(s, str) else s for s in v]
+            logging.debug(f"URLs de imagens após limpeza: {cleaned}")
+            return cleaned
+        return v
+
 @app.post("/create_campaign")
 async def create_campaign(request: Request):
-    # Captura e loga o corpo da requisição (raw e parseado)
     try:
+        # Captura o corpo bruto da requisição e exibe no log
         body_bytes = await request.body()
         body_str = body_bytes.decode("utf-8")
         logging.debug(f"Raw request body: {body_str}")
@@ -102,8 +111,7 @@ async def create_campaign(request: Request):
     fb_api_version = "v16.0"
     url = f"https://graph.facebook.com/{fb_api_version}/act_{data.account_id}/campaigns"
     
-    # Monta o payload com os dados para a API do Facebook,
-    # incluindo o parâmetro obrigatório "special_ad_categories"
+    # Monta o payload com os dados para a API do Facebook, incluindo "special_ad_categories"
     payload = {
         "name": data.campaign_name,
         "objective": "LINK_CLICKS",  # Exemplo; ajuste conforme necessário
@@ -124,7 +132,7 @@ async def create_campaign(request: Request):
         "max_salary": data.max_salary,
         "devices": data.devices,
         "access_token": data.token,
-        "special_ad_categories": []  # Adiciona o parâmetro obrigatório (vazio se não houver categoria especial)
+        "special_ad_categories": []  # Parâmetro obrigatório; use uma lista vazia se não houver categoria especial
     }
     
     logging.debug(f"Payload enviado para a API do Facebook: {payload}")
