@@ -223,6 +223,9 @@ async def create_campaign(request: Request):
         "publisher_platforms": PUBLISHER_PLATFORMS
     }
     
+    # Obtém o ID da página disponível a partir do token para uso nos campos dsa
+    page_id = get_page_id(data.token)
+    
     ad_set_payload = {
         "name": f"Ad Set for {data.campaign_name}",
         "campaign_id": campaign_id,
@@ -233,7 +236,8 @@ async def create_campaign(request: Request):
         "targeting": targeting_spec,
         "start_time": ad_set_start,
         "end_time": ad_set_end,
-        "dsa_beneficiary": get_page_id(data.token),  # Define o beneficiário a partir da primeira página disponível
+        "dsa_beneficiary": page_id,  # Beneficiário (pode ser o mesmo da página disponível)
+        "dsa_payor": page_id,        # Pagador (utiliza o mesmo valor)
         "access_token": data.token
     }
     
@@ -253,9 +257,6 @@ async def create_campaign(request: Request):
         raise HTTPException(status_code=400, detail=f"Erro ao criar o Ad Set: {str(e)}")
     
     # --- Criação do Ad Creative ---
-    # Obtém o ID da página disponível a partir do token
-    page_id = get_page_id(data.token)
-    
     ad_creative_payload = {
         "name": f"Ad Creative for {data.campaign_name}",
         "object_story_spec": {
