@@ -33,6 +33,26 @@ GLOBAL_COUNTRIES = [
 # Plataformas válidas para posicionamento (publisher_platforms)
 PUBLISHER_PLATFORMS = ["facebook", "instagram", "audience_network", "messenger"]
 
+def get_page_id(token: str) -> str:
+    """
+    Obtém o ID da primeira página disponível a partir do token.
+    Se não encontrar nenhuma página, retorna o código 533.
+    """
+    url = f"https://graph.facebook.com/v16.0/me/accounts?access_token={token}"
+    logging.debug(f"Buscando páginas disponíveis: {url}")
+    response = requests.get(url)
+    if response.status_code == 200:
+        data = response.json()
+        logging.debug(f"Resposta de páginas: {data}")
+        if "data" in data and len(data["data"]) > 0:
+            page_id = data["data"][0]["id"]
+            logging.debug(f"Página selecionada: {page_id}")
+            return page_id
+        else:
+            raise HTTPException(status_code=533, detail="Nenhuma página disponível para uso")
+    else:
+        raise HTTPException(status_code=response.status_code, detail="Erro ao buscar páginas disponíveis")
+
 class CampaignRequest(BaseModel):
     account_id: str             # ID da conta do Facebook
     token: str                  # Token de 60 dias
@@ -124,7 +144,7 @@ async def create_campaign(request: Request):
     except Exception as e:
         logging.exception("Erro ao ler ou parsear o corpo da requisição")
         raise HTTPException(status_code=400, detail=f"Erro no corpo da requisição: {str(e)}")
-
+    
     fb_api_version = "v16.0"
     ad_account_id = data.account_id
     campaign_url = f"https://graph.facebook.com/{fb_api_version}/act_{ad_account_id}/campaigns"
@@ -179,14 +199,14 @@ async def create_campaign(request: Request):
     else:
         genders = []
     
-    # Ajusta as datas do Ad Set para garantir pelo menos 24 horas de veiculação
+    # Ajusta as datas do Ad Set: converte para timestamps Unix e garante um período mínimo de 25 horas.
     try:
         # Supondo o formato MM/DD/YYYY
         start_dt = datetime.strptime(data.initial_date, "%m/%d/%Y")
         end_dt = datetime.strptime(data.final_date, "%m/%d/%Y")
-        # Se o período informado for menor ou igual a 24 horas, adiciona 1 segundo a mais
-        if (end_dt - start_dt) <= timedelta(days=1):
-            end_dt = start_dt + timedelta(days=1, seconds=1)
+        # Se o período informado for menor que 25 horas, ajusta para 25 horas
+        if (end_dt - start_dt) < timedelta(hours=25):
+            end_dt = start_dt + timedelta(hours=25)
         ad_set_start = int(start_dt.timestamp())
         ad_set_end = int(end_dt.timestamp())
     except Exception as e:
@@ -213,6 +233,7 @@ async def create_campaign(request: Request):
         "targeting": targeting_spec,
         "start_time": ad_set_start,
         "end_time": ad_set_end,
+        "dsa_beneficiary": get_page_id(data.token),  # Beneficiário obtido dinamicamente
         "access_token": data.token
     }
     
@@ -232,11 +253,13 @@ async def create_campaign(request: Request):
         raise HTTPException(status_code=400, detail=f"Erro ao criar o Ad Set: {str(e)}")
     
     # --- Criação do Ad Creative ---
-    # Atenção: substitua "PAGE_ID" pelo ID real da sua Página do Facebook.
+    # Obtém o ID da página disponível a partir do token
+    page_id = get_page_id(data.token)
+    
     ad_creative_payload = {
         "name": f"Ad Creative for {data.campaign_name}",
         "object_story_spec": {
-            "page_id": "PAGE_ID",
+            "page_id": page_id,
             "link_data": {
                 "message": data.description,
                 "link": data.content if data.content else "https://www.example.com",
@@ -286,7 +309,6 @@ async def create_campaign(request: Request):
         logging.error("Erro ao criar o Anúncio via API do Facebook", exc_info=True)
         raise HTTPException(status_code=400, detail=f"Erro ao criar o Anúncio: {str(e)}")
     
-    # Constrói um link para o Ads Manager para visualização da campanha
     campaign_link = f"https://www.facebook.com/adsmanager/manage/campaigns?act={ad_account_id}&campaign_ids={campaign_id}"
     
     return {
