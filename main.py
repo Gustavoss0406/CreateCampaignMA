@@ -233,7 +233,7 @@ async def create_campaign(request: Request):
         "targeting": targeting_spec,
         "start_time": ad_set_start,
         "end_time": ad_set_end,
-        "dsa_beneficiary": get_page_id(data.token),  # Beneficiário obtido dinamicamente
+        "dsa_payor": get_page_id(data.token),  # Define o pagador a partir da primeira página disponível
         "access_token": data.token
     }
     
