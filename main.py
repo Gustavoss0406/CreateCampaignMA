@@ -27,6 +27,7 @@ class CampaignRequest(BaseModel):
     account_id: str            # ID da conta do Facebook
     token: str                 # Token de 60 dias
     campaign_name: str = ""      # Nome da campanha
+    objective: str = "OUTCOME_TRAFFIC"  # Objetivo da campanha (valor padrão se não for enviado)
     content_type: str = ""       # Tipo de conteúdo (carrossel, single image, video)
     content: str = ""            # URL da imagem (para single image) ou outro conteúdo
     images: list[str] = []       # Lista de URLs (para carrossel)
@@ -42,6 +43,19 @@ class CampaignRequest(BaseModel):
     min_salary: float = 0.0      # Salário mínimo do público-alvo
     max_salary: float = 0.0      # Salário máximo do público-alvo
     devices: list[str] = []      # Dispositivos (ex.: ["Smartphone", "Desktop"])
+
+    @field_validator("objective", mode="before")
+    def validate_objective(cls, v):
+        mapping = {
+            "Brand Awareness": "OUTCOME_AWARENESS",
+            "Sales": "OUTCOME_SALES",
+            "Leads": "OUTCOME_LEADS"
+        }
+        if isinstance(v, str) and v in mapping:
+            converted = mapping[v]
+            logging.debug(f"Objective convertido de '{v}' para '{converted}'")
+            return converted
+        return v
 
     @field_validator("budget", mode="before")
     def parse_budget(cls, v):
@@ -114,8 +128,8 @@ async def create_campaign(request: Request):
     # Monta o payload com os dados para a API do Facebook, incluindo "special_ad_categories"
     payload = {
         "name": data.campaign_name,
-        "objective": "LINK_CLICKS",  # Exemplo; ajuste conforme necessário
-        "status": "PAUSED",          # Inicialmente pausada
+        "objective": data.objective,
+        "status": "PAUSED",           # Inicialmente pausada
         "spend_cap": int(data.budget),
         "start_time": data.initial_date,
         "end_time": data.final_date,
@@ -132,7 +146,7 @@ async def create_campaign(request: Request):
         "max_salary": data.max_salary,
         "devices": data.devices,
         "access_token": data.token,
-        "special_ad_categories": []  # Parâmetro obrigatório; use uma lista vazia se não houver categoria especial
+        "special_ad_categories": []  # Parâmetro obrigatório; lista vazia se não houver categoria especial
     }
     
     logging.debug(f"Payload enviado para a API do Facebook: {payload}")
