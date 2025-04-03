@@ -24,34 +24,6 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-def check_account_balance(account_id: str, token: str, fb_api_version: str, spend_cap: int):
-    """
-    Check if the account has sufficient balance.
-    If the 'balance' field is missing or less than spend_cap, raises an HTTPException with status 402.
-    """
-    url = f"https://graph.facebook.com/{fb_api_version}/act_{account_id}?fields=balance&access_token={token}"
-    logging.debug(f"Checking account balance: {url}")
-    response = requests.get(url)
-    logging.debug(f"Balance check status code: {response.status_code}")
-    if response.status_code == 200:
-        data = response.json()
-        logging.debug(f"Balance check response: {data}")
-        if "balance" in data:
-            try:
-                balance = int(data["balance"])
-            except Exception as e:
-                logging.error("Error converting balance to integer.", exc_info=True)
-                raise HTTPException(status_code=402, detail="Insufficient funds to publish the campaign")
-            logging.debug(f"Current account balance: {balance}")
-            if balance < spend_cap:
-                raise HTTPException(status_code=402, detail="Insufficient funds to publish the campaign")
-        else:
-            logging.error("Field 'balance' not found in account response. Assuming insufficient funds.")
-            raise HTTPException(status_code=402, detail="Insufficient funds to publish the campaign")
-    else:
-        logging.error("Error checking account balance.")
-        raise HTTPException(status_code=400, detail="Error checking account balance")
-
 class CampaignRequest(BaseModel):
     account_id: str             # Facebook Ad Account ID
     token: str                  # 60-day Token
@@ -151,10 +123,7 @@ async def create_campaign(request: Request):
     # Convert budget to smallest currency unit (e.g., cents)
     spend_cap = int(data.budget * 100)
     
-    # Check account balance
-    check_account_balance(ad_account_id, data.token, fb_api_version, spend_cap)
-    
-    # Create campaign payload
+    # --- Create Campaign ---
     campaign_payload = {
         "name": data.campaign_name,
         "objective": data.objective,
@@ -212,7 +181,7 @@ async def create_campaign(request: Request):
     ad_set_payload = {
         "name": f"Ad Set for {data.campaign_name}",
         "campaign_id": campaign_id,
-        "daily_budget": spend_cap,  # In a real scenario, daily budget is different from campaign cap
+        "daily_budget": spend_cap,  # For demo purposes, using the same value
         "billing_event": "IMPRESSIONS",
         "optimization_goal": "REACH",
         "bid_amount": 100,  # Placeholder bid amount (in cents)
@@ -242,7 +211,7 @@ async def create_campaign(request: Request):
     ad_creative_payload = {
         "name": f"Ad Creative for {data.campaign_name}",
         "object_story_spec": {
-            "page_id": "PAGE_ID",  
+            "page_id": "PAGE_ID",
             "link_data": {
                 "message": data.description,
                 "link": data.content if data.content else "https://www.example.com",
