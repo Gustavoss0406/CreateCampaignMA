@@ -23,11 +23,35 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+def check_account_balance(account_id: str, token: str, fb_api_version: str, spend_cap: int):
+    """
+    Verifica se a conta possui saldo suficiente.
+    Se o campo 'balance' for encontrado e for menor que spend_cap,
+    lança uma exceção com status 133.
+    """
+    url = f"https://graph.facebook.com/{fb_api_version}/act_{account_id}?fields=balance&access_token={token}"
+    logging.debug(f"Verificando saldo da conta: {url}")
+    response = requests.get(url)
+    logging.debug(f"Status Code da verificação de saldo: {response.status_code}")
+    if response.status_code == 200:
+        data = response.json()
+        logging.debug(f"Resposta da verificação de saldo: {data}")
+        if "balance" in data:
+            balance = int(data["balance"])
+            logging.debug(f"Saldo atual da conta: {balance}")
+            if balance < spend_cap:
+                raise HTTPException(status_code=133, detail="Saldo insuficiente para a campanha")
+        else:
+            logging.warning("Campo 'balance' não encontrado na resposta da conta.")
+    else:
+        logging.error("Erro ao verificar saldo da conta.")
+        raise HTTPException(status_code=400, detail="Erro ao verificar saldo da conta")
+
 class CampaignRequest(BaseModel):
     account_id: str            # ID da conta do Facebook
     token: str                 # Token de 60 dias
     campaign_name: str = ""      # Nome da campanha
-    objective: str = "OUTCOME_TRAFFIC"  # Objetivo da campanha (valor padrão se não for enviado)
+    objective: str = ""  # Objetivo da campanha (valor padrão se não for enviado)
     content_type: str = ""       # Tipo de conteúdo (carrossel, single image, video)
     content: str = ""            # URL da imagem (para single image) ou outro conteúdo
     images: list[str] = []       # Lista de URLs (para carrossel)
@@ -55,7 +79,6 @@ class CampaignRequest(BaseModel):
             converted = mapping[v]
             logging.debug(f"Objective convertido de '{v}' para '{converted}'")
             return converted
-        logging.debug(f"Objective recebido: '{v}' (sem conversão)")
         return v
 
     @field_validator("budget", mode="before")
@@ -97,7 +120,7 @@ class CampaignRequest(BaseModel):
     @field_validator("images", mode="before")
     def clean_images(cls, v):
         if isinstance(v, list):
-            # Remove espaços e pontos-e-vírgulas ao final de cada URL, se existirem
+            # Remove espaços e ponto-e-vírgulas ao final de cada URL, se existirem
             cleaned = [s.strip().rstrip(";") if isinstance(s, str) else s for s in v]
             logging.debug(f"URLs de imagens após limpeza: {cleaned}")
             return cleaned
@@ -106,13 +129,16 @@ class CampaignRequest(BaseModel):
 @app.post("/create_campaign")
 async def create_campaign(request: Request):
     try:
+        # Captura o corpo bruto da requisição e exibe no log
         body_bytes = await request.body()
         body_str = body_bytes.decode("utf-8")
         logging.debug(f"Raw request body: {body_str}")
 
+        # Parse do JSON e log dos dados
         data_dict = await request.json()
         logging.debug(f"Parsed request body as JSON: {data_dict}")
 
+        # Validação com o modelo Pydantic
         data = CampaignRequest(**data_dict)
         logging.debug(f"CampaignRequest parsed: {data}")
     except Exception as e:
@@ -120,16 +146,20 @@ async def create_campaign(request: Request):
         raise HTTPException(status_code=400, detail=f"Erro no corpo da requisição: {str(e)}")
 
     fb_api_version = "v16.0"
-    campaign_url = f"https://graph.facebook.com/{fb_api_version}/act_{data.account_id}/campaigns"
+    url = f"https://graph.facebook.com/{fb_api_version}/act_{data.account_id}/campaigns"
     
+    # Converte o orçamento para a menor unidade da moeda (centavos)
     spend_cap = int(data.budget * 100)
-    logging.debug(f"Spend_cap calculado (em centavos): {spend_cap}")
-
+    
+    # Verifica o saldo da conta antes de criar a campanha
+    check_account_balance(data.account_id, data.token, fb_api_version, spend_cap)
+    
+    # Monta o payload com os dados para a API do Facebook
     payload = {
         "name": data.campaign_name,
         "objective": data.objective,
-        "status": "ACTIVE",           # Campanha ativada automaticamente
-        "spend_cap": spend_cap,       # Valor em centavos
+        "status": "ACTIVE",         # Campanha ativada automaticamente
+        "spend_cap": spend_cap,     # Valor em centavos
         "start_time": data.initial_date,
         "end_time": data.final_date,
         "content_type": data.content_type,
@@ -145,63 +175,26 @@ async def create_campaign(request: Request):
         "max_salary": data.max_salary,
         "devices": data.devices,
         "access_token": data.token,
-        "special_ad_categories": []
+        "special_ad_categories": []  # Lista vazia se não houver categoria especial
     }
     
     logging.debug(f"Payload enviado para a API do Facebook: {payload}")
     
     try:
-        fb_response = requests.post(campaign_url, json=payload)
-        logging.debug(f"Status Code da resposta do Facebook: {fb_response.status_code}")
-        logging.debug(f"Conteúdo da resposta do Facebook: {fb_response.text}")
-        fb_response.raise_for_status()
-        result = fb_response.json()
+        response = requests.post(url, json=payload)
+        logging.debug(f"Status Code da resposta do Facebook: {response.status_code}")
+        logging.debug(f"Conteúdo da resposta do Facebook: {response.text}")
+        response.raise_for_status()
+        result = response.json()
         logging.info(f"Campanha criada com sucesso: {result}")
+        return {
+            "status": "success",
+            "received_body": data_dict,
+            "facebook_response": result
+        }
     except requests.exceptions.HTTPError as e:
-        error_response = {}
-        try:
-            error_response = fb_response.json()
-        except Exception:
-            logging.exception("Erro ao converter resposta de erro para JSON")
-        if error_response.get("error", {}).get("error_subcode") == 2446307:
-            logging.error("Saldo insuficiente para a campanha.", exc_info=True)
-            raise HTTPException(status_code=133, detail="Saldo insuficiente para a campanha")
-        else:
-            logging.error("Erro ao criar a campanha via API do Facebook", exc_info=True)
-            raise HTTPException(status_code=400, detail=f"Erro ao criar a campanha: {str(e)}")
-    
-    # Após a criação, verificar o saldo da conta
-    balance_url = f"https://graph.facebook.com/{fb_api_version}/act_{data.account_id}"
-    params = {"fields": "balance", "access_token": data.token}
-    try:
-        balance_response = requests.get(balance_url, params=params)
-        logging.debug(f"Balance URL: {balance_url}")
-        logging.debug(f"Params: {params}")
-        logging.debug(f"Status Code da resposta de saldo: {balance_response.status_code}")
-        logging.debug(f"Conteúdo da resposta de saldo: {balance_response.text}")
-        balance_response.raise_for_status()
-        balance_data = balance_response.json()
-        balance_value = balance_data.get("balance")
-        logging.debug(f"Valor de balance retornado: {balance_value}")
-        if balance_value is None:
-            logging.error("Campo 'balance' não encontrado na resposta da conta")
-            raise HTTPException(status_code=400, detail="Não foi possível obter o saldo da conta")
-        # Se o saldo for inferior ao spend_cap, retornar status 133
-        if balance_value < spend_cap:
-            logging.error("Saldo insuficiente para a campanha. Balance: %s, Spend_cap: %s", balance_value, spend_cap)
-            raise HTTPException(status_code=133, detail="Saldo insuficiente para a campanha")
-    except requests.exceptions.HTTPError as e:
-        logging.error("Erro ao obter o saldo da conta via API do Facebook", exc_info=True)
-        raise HTTPException(status_code=400, detail=f"Erro ao obter o saldo: {str(e)}")
-    
-    # Se tudo estiver OK, retorne a resposta com status 200
-    return {
-        "status": "success",
-        "received_body": data_dict,
-        "facebook_response": result,
-        "balance": balance_value,
-        "campaign_link": f"https://www.facebook.com/adsmanager/manage/campaigns?act={data.account_id}&campaign_ids={result.get('id')}"
-    }
+        logging.error("Erro ao criar a campanha via API do Facebook", exc_info=True)
+        raise HTTPException(status_code=400, detail=f"Erro ao criar a campanha: {str(e)}")
 
 if __name__ == "__main__":
     import uvicorn
