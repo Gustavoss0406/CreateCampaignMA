@@ -4,7 +4,7 @@ import os
 import requests
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 
 # Configuração detalhada de logs para debug
 logging.basicConfig(
@@ -37,11 +37,47 @@ class CampaignRequest(BaseModel):
     initial_date: str = ""       # Data inicial (formato ISO ou conforme definido)
     final_date: str = ""         # Data final
     pricing_model: str = ""      # Modelo de precificação (CPC, CPA, etc.)
-    target_sex: str = ""         # Sexo do público-alvo (ex.: MALE, FEMALE)
+    target_sex: str = ""         # Sexo do público-alvo (ex.: Male, Female, All)
     target_age: int = 0          # Idade do público-alvo (valor numérico)
     min_salary: float = 0.0      # Salário mínimo do público-alvo
     max_salary: float = 0.0      # Salário máximo do público-alvo
-    devices: list[str] = []      # Dispositivos (Desktop, Tablet, Smartphone)
+    devices: list[str] = []      # Dispositivos (ex.: ["Smartphone", "Desktop"])
+
+    @field_validator("budget", mode="before")
+    def parse_budget(cls, v):
+        if isinstance(v, str):
+            v_clean = v.replace("$", "").replace(" ", "").replace(",", ".")
+            try:
+                parsed = float(v_clean)
+                logging.debug(f"Budget convertido: {parsed}")
+                return parsed
+            except Exception as e:
+                raise ValueError(f"Budget inválido: {v}") from e
+        return v
+
+    @field_validator("min_salary", mode="before")
+    def parse_min_salary(cls, v):
+        if isinstance(v, str):
+            v_clean = v.replace("$", "").replace(" ", "").replace(",", ".")
+            try:
+                parsed = float(v_clean)
+                logging.debug(f"min_salary convertido: {parsed}")
+                return parsed
+            except Exception as e:
+                raise ValueError(f"min_salary inválido: {v}") from e
+        return v
+
+    @field_validator("max_salary", mode="before")
+    def parse_max_salary(cls, v):
+        if isinstance(v, str):
+            v_clean = v.replace("$", "").replace(" ", "").replace(",", ".")
+            try:
+                parsed = float(v_clean)
+                logging.debug(f"max_salary convertido: {parsed}")
+                return parsed
+            except Exception as e:
+                raise ValueError(f"max_salary inválido: {v}") from e
+        return v
 
 @app.post("/create_campaign")
 async def create_campaign(request: Request):
@@ -62,7 +98,7 @@ async def create_campaign(request: Request):
         logging.exception("Erro ao ler ou parsear o corpo da requisição")
         raise HTTPException(status_code=400, detail=f"Erro no corpo da requisição: {str(e)}")
 
-    # Configura a URL da API do Facebook
+    # Configura a URL da API do Facebook (ajuste conforme necessário)
     fb_api_version = "v16.0"
     url = f"https://graph.facebook.com/{fb_api_version}/act_{data.account_id}/campaigns"
     
