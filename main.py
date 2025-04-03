@@ -181,22 +181,24 @@ async def create_campaign(request: Request):
     
     # Ajusta as datas do Ad Set para garantir pelo menos 24 horas de veiculação
     try:
+        # Supondo o formato MM/DD/YYYY
         start_dt = datetime.strptime(data.initial_date, "%m/%d/%Y")
         end_dt = datetime.strptime(data.final_date, "%m/%d/%Y")
-        if (end_dt - start_dt) < timedelta(days=1):
-            end_dt = start_dt + timedelta(days=1)
-        ad_set_start = start_dt.strftime("%m/%d/%Y")
-        ad_set_end = end_dt.strftime("%m/%d/%Y")
+        # Se o período informado for menor ou igual a 24 horas, adiciona 1 segundo a mais
+        if (end_dt - start_dt) <= timedelta(days=1):
+            end_dt = start_dt + timedelta(days=1, seconds=1)
+        ad_set_start = int(start_dt.timestamp())
+        ad_set_end = int(end_dt.timestamp())
     except Exception as e:
-        logging.warning("Não foi possível processar as datas; usando valores originais.")
+        logging.warning("Não foi possível processar as datas; usando valores originais como timestamps.")
         ad_set_start = data.initial_date
         ad_set_end = data.final_date
     
-    # Configura o targeting com geolocalização usando GLOBAL_COUNTRIES e plataformas válidas
+    # Configura o targeting com geolocalização e plataformas válidas
     targeting_spec = {
         "geo_locations": {"countries": GLOBAL_COUNTRIES},
         "genders": genders,
-        "age_min": data.target_age,  # Utiliza target_age como mínimo (ajuste se necessário)
+        "age_min": data.target_age,
         "age_max": data.target_age,
         "publisher_platforms": PUBLISHER_PLATFORMS
     }
