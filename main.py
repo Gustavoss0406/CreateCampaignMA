@@ -23,6 +23,13 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Lista de países representativa para direcionamento global.
+# Em produção, considere utilizar uma lista completa dos códigos ISO desejados.
+GLOBAL_COUNTRIES = [
+    "US", "CA", "GB", "AU", "DE", "FR", "BR", "IN", "MX", "IT",
+    "ES", "NL", "SE", "NO", "DK", "FI", "CH", "JP", "KR", "SG"
+]
+
 class CampaignRequest(BaseModel):
     account_id: str             # ID da conta do Facebook
     token: str                  # Token de 60 dias
@@ -171,7 +178,7 @@ async def create_campaign(request: Request):
     
     # Configura o targeting com geolocalização global
     targeting_spec = {
-        "geo_locations": {"countries": ["ALL"]},  # Direcionamento global
+        "geo_locations": {"countries": GLOBAL_COUNTRIES},  # Lista de países representativa para targeting global
         "genders": genders,
         "age_min": data.target_age,  # Utiliza target_age como mínimo (ajuste conforme necessário)
         "age_max": data.target_age,
