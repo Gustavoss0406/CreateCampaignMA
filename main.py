@@ -5,6 +5,8 @@ import requests
 from datetime import datetime, timedelta
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, field_validator
 
 # Configuração detalhada de logs para debug
@@ -35,8 +37,7 @@ PUBLISHER_PLATFORMS = ["facebook", "instagram", "audience_network", "messenger"]
 
 def extract_fb_error(response: requests.Response) -> str:
     """
-    Tenta extrair a mensagem de erro (error_user_msg) da resposta da API do Facebook.
-    Retorna a mensagem extraída ou uma mensagem padrão caso não seja possível.
+    Extrai a mensagem de erro (error_user_msg) da resposta da API do Facebook.
     """
     try:
         error_json = response.json()
@@ -47,7 +48,7 @@ def extract_fb_error(response: requests.Response) -> str:
 def get_page_id(token: str) -> str:
     """
     Obtém o ID da primeira página disponível a partir do token.
-    Se não encontrar nenhuma página, retorna o código 533.
+    Se não encontrar nenhuma página, lança HTTPException com status 533.
     """
     url = f"https://graph.facebook.com/v16.0/me/accounts?access_token={token}"
     logging.debug(f"Buscando páginas disponíveis: {url}")
@@ -63,6 +64,22 @@ def get_page_id(token: str) -> str:
             raise HTTPException(status_code=533, detail="Nenhuma página disponível para uso")
     else:
         raise HTTPException(status_code=response.status_code, detail="Erro ao buscar páginas disponíveis")
+
+# Exception handler para erros de validação
+@app.exception_handler(RequestValidationError)
+async def validation_exception_handler(request: Request, exc: RequestValidationError):
+    # Verifica se algum erro é referente ao campo "budget"
+    for error in exc.errors():
+        if "budget" in error.get("loc", []):
+            return JSONResponse(
+                status_code=400,
+                content={"detail": "Budget Inválido"}
+            )
+    # Se não for do campo budget, retorna o erro padrão
+    return JSONResponse(
+        status_code=400,
+        content={"detail": exc.errors()}
+    )
 
 class CampaignRequest(BaseModel):
     account_id: str             # ID da conta do Facebook
@@ -106,8 +123,8 @@ class CampaignRequest(BaseModel):
                 parsed = float(v_clean)
                 logging.debug(f"Budget convertido: {parsed}")
                 return parsed
-            except Exception as e:
-                raise ValueError(f"Budget inválido: {v}") from e
+            except Exception:
+                raise ValueError("Budget Inválido")
         return v
 
     @field_validator("min_salary", mode="before")
@@ -160,11 +177,10 @@ async def create_campaign(request: Request):
     ad_account_id = data.account_id
     campaign_url = f"https://graph.facebook.com/{fb_api_version}/act_{ad_account_id}/campaigns"
     
-    # Calcula o orçamento total em centavos e, para o Ad Set, o orçamento diário.
+    # Calcula o orçamento total em centavos e o orçamento diário para o Ad Set.
     total_budget_centavos = int(data.budget * 100)
     
     # --- Criação da Campanha ---
-    # Para campanhas sem CBO, não definimos o orçamento no nível da campanha.
     campaign_payload = {
         "name": data.campaign_name,
         "objective": data.objective,
@@ -196,7 +212,6 @@ async def create_campaign(request: Request):
         if num_dias <= 0:
             num_dias = 1
         daily_budget = total_budget_centavos // num_dias
-        # Garante um período mínimo de 25 horas:
         if (end_dt - start_dt) < timedelta(hours=25):
             end_dt = start_dt + timedelta(hours=25)
         ad_set_start = int(start_dt.timestamp())
@@ -332,16 +347,6 @@ async def create_campaign(request: Request):
             "ad": ad_result
         }
     }
-
-def extract_fb_error(response: requests.Response) -> str:
-    """
-    Extrai a mensagem de erro (error_user_msg) da resposta da API do Facebook.
-    """
-    try:
-        error_json = response.json()
-        return error_json.get("error", {}).get("error_user_msg", "Erro desconhecido ao comunicar com a API do Facebook")
-    except Exception:
-        return "Erro ao processar a resposta da API do Facebook"
 
 if __name__ == "__main__":
     import uvicorn
