@@ -33,6 +33,17 @@ GLOBAL_COUNTRIES = [
 # Plataformas válidas para posicionamento (publisher_platforms)
 PUBLISHER_PLATFORMS = ["facebook", "instagram", "audience_network", "messenger"]
 
+def extract_fb_error(response: requests.Response) -> str:
+    """
+    Tenta extrair a mensagem de erro (error_user_msg) da resposta da API do Facebook.
+    Retorna a mensagem extraída ou uma mensagem padrão caso não seja possível.
+    """
+    try:
+        error_json = response.json()
+        return error_json.get("error", {}).get("error_user_msg", "Erro desconhecido ao comunicar com a API do Facebook")
+    except Exception:
+        return "Erro ao processar a resposta da API do Facebook"
+
 def get_page_id(token: str) -> str:
     """
     Obtém o ID da primeira página disponível a partir do token.
@@ -149,7 +160,7 @@ async def create_campaign(request: Request):
     ad_account_id = data.account_id
     campaign_url = f"https://graph.facebook.com/{fb_api_version}/act_{ad_account_id}/campaigns"
     
-    # Cálculo: usamos o budget total, mas para o Ad Set vamos calcular o orçamento diário
+    # Calcula o orçamento total em centavos e, para o Ad Set, o orçamento diário.
     total_budget_centavos = int(data.budget * 100)
     
     # --- Criação da Campanha ---
@@ -157,7 +168,7 @@ async def create_campaign(request: Request):
     campaign_payload = {
         "name": data.campaign_name,
         "objective": data.objective,
-        "status": "ACTIVE",         # Campanha ativada automaticamente
+        "status": "ACTIVE",
         "access_token": data.token,
         "special_ad_categories": []
     }
@@ -173,8 +184,9 @@ async def create_campaign(request: Request):
         campaign_id = campaign_result.get("id")
         logging.info(f"Campanha criada com sucesso: {campaign_result}")
     except requests.exceptions.HTTPError as e:
+        error_msg = extract_fb_error(campaign_response)
         logging.error("Erro ao criar a campanha via API do Facebook", exc_info=True)
-        raise HTTPException(status_code=400, detail=f"Erro ao criar a campanha: {str(e)}")
+        raise HTTPException(status_code=400, detail=f"Erro ao criar a campanha: {error_msg}")
     
     # --- Cálculo do orçamento diário para o Ad Set ---
     try:
@@ -211,16 +223,16 @@ async def create_campaign(request: Request):
         "publisher_platforms": PUBLISHER_PLATFORMS
     }
     
-    # Obtemos o ID da página disponível para uso nos campos DSA
+    # Obtém o ID da página disponível para uso nos campos DSA
     page_id = get_page_id(data.token)
     
     ad_set_payload = {
         "name": f"Ad Set for {data.campaign_name}",
         "campaign_id": campaign_id,
-        "daily_budget": daily_budget,  # Orçamento diário calculado
+        "daily_budget": daily_budget,
         "billing_event": "IMPRESSIONS",
         "optimization_goal": "REACH",
-        "bid_amount": 100,  # Lance de exemplo (em centavos)
+        "bid_amount": 100,
         "targeting": targeting_spec,
         "start_time": ad_set_start,
         "end_time": ad_set_end,
@@ -241,11 +253,11 @@ async def create_campaign(request: Request):
         ad_set_id = ad_set_result.get("id")
         logging.info(f"Ad Set criado com sucesso: {ad_set_result}")
     except requests.exceptions.HTTPError as e:
+        error_msg = extract_fb_error(ad_set_response)
         logging.error("Erro ao criar o Ad Set via API do Facebook", exc_info=True)
-        raise HTTPException(status_code=400, detail=f"Erro ao criar o Ad Set: {str(e)}")
+        raise HTTPException(status_code=400, detail=f"Erro ao criar o Ad Set: {error_msg}")
     
     # --- Criação do Ad Creative ---
-    # Constrói o payload do Ad Creative; removemos o campo caption se keywords não for uma URL.
     link_data = {
         "message": data.description,
         "link": data.content if data.content else "https://www.example.com",
@@ -275,8 +287,9 @@ async def create_campaign(request: Request):
         creative_id = ad_creative_result.get("id")
         logging.info(f"Ad Creative criado com sucesso: {ad_creative_result}")
     except requests.exceptions.HTTPError as e:
+        error_msg = extract_fb_error(ad_creative_response)
         logging.error("Erro ao criar o Ad Creative via API do Facebook", exc_info=True)
-        raise HTTPException(status_code=400, detail=f"Erro ao criar o Ad Creative: {str(e)}")
+        raise HTTPException(status_code=400, detail=f"Erro ao criar o Ad Creative: {error_msg}")
     
     # --- Criação do Anúncio ---
     ad_payload = {
@@ -299,8 +312,9 @@ async def create_campaign(request: Request):
         ad_id = ad_result.get("id")
         logging.info(f"Anúncio criado com sucesso: {ad_result}")
     except requests.exceptions.HTTPError as e:
+        error_msg = extract_fb_error(ad_response)
         logging.error("Erro ao criar o Anúncio via API do Facebook", exc_info=True)
-        raise HTTPException(status_code=400, detail=f"Erro ao criar o Anúncio: {str(e)}")
+        raise HTTPException(status_code=400, detail=f"Erro ao criar o Anúncio: {error_msg}")
     
     campaign_link = f"https://www.facebook.com/adsmanager/manage/campaigns?act={ad_account_id}&campaign_ids={campaign_id}"
     
@@ -318,6 +332,16 @@ async def create_campaign(request: Request):
             "ad": ad_result
         }
     }
+
+def extract_fb_error(response: requests.Response) -> str:
+    """
+    Extrai a mensagem de erro (error_user_msg) da resposta da API do Facebook.
+    """
+    try:
+        error_json = response.json()
+        return error_json.get("error", {}).get("error_user_msg", "Erro desconhecido ao comunicar com a API do Facebook")
+    except Exception:
+        return "Erro ao processar a resposta da API do Facebook"
 
 if __name__ == "__main__":
     import uvicorn
