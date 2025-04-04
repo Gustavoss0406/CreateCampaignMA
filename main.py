@@ -68,33 +68,36 @@ def get_page_id(token: str) -> str:
 
 def check_account_balance(account_id: str, token: str, fb_api_version: str, spend_cap: int):
     """
-    Checks if the account has sufficient balance.
-    If the balance field is missing or less than spend_cap, raises HTTPException with status 402.
+    Checks if the account has sufficient funds.
+    For prepaid accounts, the available balance is calculated by: spend_cap - amount_spent.
+    If the resulting balance is less than spend_cap (or fields are missing), raises HTTPException with status 402.
     """
-    url = f"https://graph.facebook.com/{fb_api_version}/act_{account_id}?fields=balance&access_token={token}"
+    url = f"https://graph.facebook.com/{fb_api_version}/act_{account_id}?fields=spend_cap,amount_spent,currency&access_token={token}"
     logging.debug(f"Checking account balance: {url}")
     response = requests.get(url)
     logging.debug(f"Balance check status code: {response.status_code}")
     if response.status_code == 200:
         data = response.json()
         logging.debug(f"Balance check response: {data}")
-        if "balance" in data:
+        if "spend_cap" in data and "amount_spent" in data:
             try:
-                balance = int(data["balance"])
+                spend_cap_api = int(data["spend_cap"])
+                amount_spent = int(data["amount_spent"])
             except Exception as e:
-                logging.error("Error converting balance to integer.", exc_info=True)
+                logging.error("Error converting spend_cap or amount_spent to integer.", exc_info=True)
                 raise HTTPException(status_code=402, detail="Insufficient funds to create campaign")
-            logging.debug(f"Current account balance: {balance}")
-            if balance < spend_cap:
+            available_balance = spend_cap_api - amount_spent
+            logging.debug(f"Calculated available balance: {available_balance}")
+            if available_balance < spend_cap:
                 raise HTTPException(status_code=402, detail="Insufficient funds to create campaign")
         else:
-            logging.error("Balance field not found in account response. Assuming insufficient funds.")
+            logging.error("Required fields not found in account response. Assuming insufficient funds.")
             raise HTTPException(status_code=402, detail="Insufficient funds to create campaign")
     else:
         logging.error("Error checking account balance.")
         raise HTTPException(status_code=response.status_code, detail="Error checking account balance")
 
-# Exception handler for validation errors, returning a simple error message.
+# Exception handler for validation errors, returning a simple, friendly error message.
 @app.exception_handler(RequestValidationError)
 async def validation_exception_handler(request: Request, exc: RequestValidationError):
     try:
@@ -196,7 +199,6 @@ async def create_campaign(request: Request):
         logging.debug(f"CampaignRequest parsed: {data}")
     except Exception as e:
         logging.exception("Error reading or parsing request body")
-        # Return a simple error message
         raise HTTPException(status_code=400, detail="Error reading or parsing request body")
     
     fb_api_version = "v16.0"
@@ -206,7 +208,7 @@ async def create_campaign(request: Request):
     # Calculate total budget in cents
     total_budget_cents = int(data.budget * 100)
     
-    # Check account balance before creating the campaign
+    # Check account balance before creating the campaign (using spend_cap and amount_spent)
     check_account_balance(ad_account_id, data.token, fb_api_version, total_budget_cents)
     
     # --- Create Campaign ---
