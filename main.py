@@ -69,8 +69,8 @@ def get_page_id(token: str) -> str:
 def check_account_balance(account_id: str, token: str, fb_api_version: str, spend_cap: int):
     """
     Checks if the account has sufficient funds.
-    For prepaid accounts, the available balance is calculated by: spend_cap - amount_spent.
-    If the resulting balance is less than spend_cap (or fields are missing), raises HTTPException with status 402.
+    For prepaid accounts, available balance = spend_cap - amount_spent.
+    If the available balance is less than the required spend_cap, raises HTTPException with status 402.
     """
     url = f"https://graph.facebook.com/{fb_api_version}/act_{account_id}?fields=spend_cap,amount_spent,currency&access_token={token}"
     logging.debug(f"Checking account balance: {url}")
@@ -97,7 +97,7 @@ def check_account_balance(account_id: str, token: str, fb_api_version: str, spen
         logging.error("Error checking account balance.")
         raise HTTPException(status_code=response.status_code, detail="Error checking account balance")
 
-# Exception handler for validation errors, returning a simple, friendly error message.
+# Exception handler for validation errors, returning a simple error message.
 @app.exception_handler(RequestValidationError)
 async def validation_exception_handler(request: Request, exc: RequestValidationError):
     try:
@@ -208,7 +208,7 @@ async def create_campaign(request: Request):
     # Calculate total budget in cents
     total_budget_cents = int(data.budget * 100)
     
-    # Check account balance before creating the campaign (using spend_cap and amount_spent)
+    # Check account balance before proceeding
     check_account_balance(ad_account_id, data.token, fb_api_version, total_budget_cents)
     
     # --- Create Campaign ---
@@ -301,6 +301,8 @@ async def create_campaign(request: Request):
     except requests.exceptions.HTTPError as e:
         error_msg = extract_fb_error(ad_set_response)
         logging.error("Error creating Ad Set via Facebook API", exc_info=True)
+        # Rollback: delete campaign
+        requests.delete(f"https://graph.facebook.com/{fb_api_version}/{campaign_id}?access_token={data.token}")
         raise HTTPException(status_code=400, detail=f"Error creating Ad Set: {error_msg}")
     
     # --- Create Ad Creative ---
@@ -335,6 +337,8 @@ async def create_campaign(request: Request):
     except requests.exceptions.HTTPError as e:
         error_msg = extract_fb_error(ad_creative_response)
         logging.error("Error creating Ad Creative via Facebook API", exc_info=True)
+        # Rollback: delete campaign
+        requests.delete(f"https://graph.facebook.com/{fb_api_version}/{campaign_id}?access_token={data.token}")
         raise HTTPException(status_code=400, detail=f"Error creating Ad Creative: {error_msg}")
     
     # --- Create Ad ---
@@ -360,6 +364,8 @@ async def create_campaign(request: Request):
     except requests.exceptions.HTTPError as e:
         error_msg = extract_fb_error(ad_response)
         logging.error("Error creating Ad via Facebook API", exc_info=True)
+        # Rollback: delete campaign (which should cascade delete ad set, ad creative, etc.)
+        requests.delete(f"https://graph.facebook.com/{fb_api_version}/{campaign_id}?access_token={data.token}")
         raise HTTPException(status_code=400, detail=f"Error creating Ad: {error_msg}")
     
     campaign_link = f"https://www.facebook.com/adsmanager/manage/campaigns?act={ad_account_id}&campaign_ids={campaign_id}"
