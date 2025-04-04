@@ -149,29 +149,15 @@ async def create_campaign(request: Request):
     ad_account_id = data.account_id
     campaign_url = f"https://graph.facebook.com/{fb_api_version}/act_{ad_account_id}/campaigns"
     
-    # Converte o orçamento para centavos
-    spend_cap = int(data.budget * 100)
+    # Cálculo: usamos o budget total, mas para o Ad Set vamos calcular o orçamento diário
+    total_budget_centavos = int(data.budget * 100)
     
     # --- Criação da Campanha ---
+    # Para campanhas sem CBO, não definimos o orçamento no nível da campanha.
     campaign_payload = {
         "name": data.campaign_name,
         "objective": data.objective,
         "status": "ACTIVE",         # Campanha ativada automaticamente
-        "spend_cap": spend_cap,
-        "start_time": data.initial_date,
-        "end_time": data.final_date,
-        "content_type": data.content_type,
-        "content": data.content,
-        "images": data.images,
-        "video": data.video,
-        "description": data.description,
-        "keywords": data.keywords,
-        "pricing_model": data.pricing_model,
-        "target_sex": data.target_sex,
-        "target_age": data.target_age,
-        "min_salary": data.min_salary,
-        "max_salary": data.max_salary,
-        "devices": data.devices,
         "access_token": data.token,
         "special_ad_categories": []
     }
@@ -190,6 +176,25 @@ async def create_campaign(request: Request):
         logging.error("Erro ao criar a campanha via API do Facebook", exc_info=True)
         raise HTTPException(status_code=400, detail=f"Erro ao criar a campanha: {str(e)}")
     
+    # --- Cálculo do orçamento diário para o Ad Set ---
+    try:
+        start_dt = datetime.strptime(data.initial_date, "%m/%d/%Y")
+        end_dt = datetime.strptime(data.final_date, "%m/%d/%Y")
+        num_dias = (end_dt - start_dt).days
+        if num_dias <= 0:
+            num_dias = 1
+        daily_budget = total_budget_centavos // num_dias
+        # Garante um período mínimo de 25 horas:
+        if (end_dt - start_dt) < timedelta(hours=25):
+            end_dt = start_dt + timedelta(hours=25)
+        ad_set_start = int(start_dt.timestamp())
+        ad_set_end = int(end_dt.timestamp())
+    except Exception as e:
+        logging.warning("Erro ao processar datas; usando valores originais como timestamps.")
+        ad_set_start = data.initial_date
+        ad_set_end = data.final_date
+        daily_budget = total_budget_centavos  # fallback
+    
     # --- Criação do Ad Set ---
     if data.target_sex.lower() == "male":
         genders = [1]
@@ -197,18 +202,6 @@ async def create_campaign(request: Request):
         genders = [2]
     else:
         genders = []
-    
-    try:
-        start_dt = datetime.strptime(data.initial_date, "%m/%d/%Y")
-        end_dt = datetime.strptime(data.final_date, "%m/%d/%Y")
-        if (end_dt - start_dt) < timedelta(hours=25):
-            end_dt = start_dt + timedelta(hours=25)
-        ad_set_start = int(start_dt.timestamp())
-        ad_set_end = int(end_dt.timestamp())
-    except Exception as e:
-        logging.warning("Não foi possível processar as datas; usando valores originais como timestamps.")
-        ad_set_start = data.initial_date
-        ad_set_end = data.final_date
     
     targeting_spec = {
         "geo_locations": {"countries": GLOBAL_COUNTRIES},
@@ -224,10 +217,10 @@ async def create_campaign(request: Request):
     ad_set_payload = {
         "name": f"Ad Set for {data.campaign_name}",
         "campaign_id": campaign_id,
-        "daily_budget": spend_cap,
+        "daily_budget": daily_budget,  # Orçamento diário calculado
         "billing_event": "IMPRESSIONS",
         "optimization_goal": "REACH",
-        "bid_amount": 100,
+        "bid_amount": 100,  # Lance de exemplo (em centavos)
         "targeting": targeting_spec,
         "start_time": ad_set_start,
         "end_time": ad_set_end,
@@ -252,13 +245,12 @@ async def create_campaign(request: Request):
         raise HTTPException(status_code=400, detail=f"Erro ao criar o Ad Set: {str(e)}")
     
     # --- Criação do Ad Creative ---
-    # Construímos o payload do Ad Creative, removendo o campo caption se não for uma URL.
+    # Constrói o payload do Ad Creative; removemos o campo caption se keywords não for uma URL.
     link_data = {
         "message": data.description,
         "link": data.content if data.content else "https://www.example.com",
         "picture": data.images[0] if data.images else ""
     }
-    # Se data.keywords for uma URL, incluímos; caso contrário, omitimos
     if data.keywords.lower().startswith("http"):
         link_data["caption"] = data.keywords
     
