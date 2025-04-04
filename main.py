@@ -29,8 +29,8 @@ app.add_middleware(
 
 # List of valid country codes (ISO format) for global targeting
 GLOBAL_COUNTRIES = [
-    "US", "CA", "GB", "AU", "DE", "FR", "BR", "IN", "MX", "IT",
-    "ES", "NL", "SE", "NO", "DK", "FI", "CH", "JP", "KR", "SG"
+    "US", "CA", "GB", "DE", "FR", "BR", "IN", "MX", "IT",
+    "ES", "NL", "SE", "NO", "DK", "FI", "CH", "JP", "KR"
 ]
 
 # Valid publisher platforms for ad placement
