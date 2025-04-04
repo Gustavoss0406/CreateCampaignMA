@@ -69,75 +69,15 @@ def get_page_id(token: str) -> str:
 # Exception handler para erros de validação
 @app.exception_handler(RequestValidationError)
 async def validation_exception_handler(request: Request, exc: RequestValidationError):
-    mensagens = []
-    for error in exc.errors():
-        loc = error.get("loc", ())
-        tipo_erro = error.get("type", "")
-        campo = None
-        for parte in loc:
-            if isinstance(parte, str) and parte not in ("body", "query", "path"):
-                campo = parte
-                break
-
-        msg_personalizada = ""
-        if tipo_erro == "missing":
-            msg_personalizada = f"Campo '{campo}' é obrigatório"
-        elif tipo_erro in ("string_type", "string_sub_type"):
-            msg_personalizada = f"Campo '{campo}' deve ser um texto"
-        elif tipo_erro.endswith("_parsing"):
-            if "int" in tipo_erro:
-                msg_personalizada = f"Campo '{campo}' deve ser um número inteiro válido"
-            elif "float" in tipo_erro or "decimal" in tipo_erro:
-                msg_personalizada = f"Campo '{campo}' deve ser um número válido"
-            elif "bool" in tipo_erro:
-                msg_personalizada = f"Campo '{campo}' deve ser verdadeiro ou falso"
-            else:
-                msg_personalizada = f"Valor fornecido para o campo '{campo}' é inválido"
-        elif tipo_erro == "enum":
-            opcoes = error.get("ctx", {}).get("expected")
-            if opcoes:
-                msg_personalizada = f"Campo '{campo}' deve ser um dos seguintes valores: {opcoes}"
-            else:
-                msg_personalizada = f"Valor inválido para o campo '{campo}'"
-        elif tipo_erro in ("string_too_short", "string_too_long"):
-            min_chars = error.get("ctx", {}).get("min_length")
-            max_chars = error.get("ctx", {}).get("max_length")
-            if min_chars is not None:
-                if min_chars == 1:
-                    msg_personalizada = f"Campo '{campo}' não pode estar vazio"
-                else:
-                    msg_personalizada = f"Campo '{campo}' deve ter pelo menos {min_chars} caracteres"
-            if max_chars is not None:
-                if max_chars == 1:
-                    msg_personalizada = f"Campo '{campo}' deve ter no máximo 1 caractere"
-                else:
-                    msg_personalizada = f"Campo '{campo}' deve ter no máximo {max_chars} caracteres"
-        elif tipo_erro in ("too_short", "too_long"):
-            min_items = error.get("ctx", {}).get("min_length") or error.get("ctx", {}).get("min_items")
-            max_items = error.get("ctx", {}).get("max_length") or error.get("ctx", {}).get("max_items")
-            if min_items is not None:
-                if min_items == 1:
-                    msg_personalizada = f"Campo '{campo}' deve conter pelo menos 1 item"
-                else:
-                    msg_personalizada = f"Campo '{campo}' deve conter pelo menos {min_items} itens"
-            if max_items is not None:
-                if max_items == 1:
-                    msg_personalizada = f"Campo '{campo}' deve conter no máximo 1 item"
-                else:
-                    msg_personalizada = f"Campo '{campo}' deve conter no máximo {max_items} itens"
-        elif "date" in tipo_erro or "time" in tipo_erro:
-            msg_personalizada = f"Campo '{campo}' deve ser uma data/hora válida"
-        else:
-            # Para erros lançados via ValueError nos validadores personalizados, usar a mensagem fornecida.
-            msg_personalizada = error.get("msg", "")
-        
-        mensagens.append(msg_personalizada)
-    # Se houver um único erro, retorna como string; se múltiplos, como lista.
-    if len(mensagens) == 1:
-        conteudo = {"detail": mensagens[0]}
-    else:
-        conteudo = {"detail": mensagens}
-    return JSONResponse(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, content=conteudo)
+    # Retorna somente a mensagem do primeiro erro de validação
+    try:
+        primeira_mensagem = exc.errors()[0]["msg"]
+    except Exception:
+        primeira_mensagem = "Erro de validação"
+    return JSONResponse(
+        status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+        content={"detail": primeira_mensagem}
+    )
 
 class CampaignRequest(BaseModel):
     account_id: str             # ID da conta do Facebook
@@ -229,7 +169,8 @@ async def create_campaign(request: Request):
         logging.debug(f"CampaignRequest parsed: {data}")
     except Exception as e:
         logging.exception("Erro ao ler ou parsear o corpo da requisição")
-        raise HTTPException(status_code=400, detail=f"Erro no corpo da requisição: {str(e)}")
+        # Retorna somente a mensagem de erro simples
+        raise HTTPException(status_code=400, detail="Erro ao ler ou parsear o corpo da requisição")
     
     fb_api_version = "v16.0"
     ad_account_id = data.account_id
