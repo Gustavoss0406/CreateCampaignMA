@@ -7,7 +7,7 @@ from fastapi import FastAPI, HTTPException, Request, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import BaseModel, Field, field_validator
 from typing import List
 
 # Detailed logging configuration
@@ -134,8 +134,9 @@ class CampaignRequest(BaseModel):
     def validate_objective(cls, v):
         mapping = {
             "Brand Awareness": "OUTCOME_AWARENESS",
+            "Leads": "OUTCOME_LEADS",
             "Sales": "OUTCOME_SALES",
-            "Leads": "OUTCOME_LEADS"
+            "Vendas": "OUTCOME_SALES"
         }
         if isinstance(v, str) and v in mapping:
             converted = mapping[v]
@@ -252,6 +253,14 @@ async def create_campaign(request: Request):
         ad_set_start = data.initial_date
         ad_set_end = data.final_date
         daily_budget = total_budget_cents  # fallback
+
+    # --- Determine optimization goal based on objective ---
+    if data.objective == "OUTCOME_AWARENESS":
+        optimization_goal = "REACH"
+    elif data.objective in ["OUTCOME_LEADS", "OUTCOME_SALES"]:
+        optimization_goal = "LINK_CLICKS"
+    else:
+        optimization_goal = "REACH"
     
     # --- Create Ad Set ---
     if data.target_sex.lower() == "male":
@@ -277,7 +286,7 @@ async def create_campaign(request: Request):
         "campaign_id": campaign_id,
         "daily_budget": daily_budget,
         "billing_event": "IMPRESSIONS",
-        "optimization_goal": "REACH",
+        "optimization_goal": optimization_goal,
         "bid_amount": 100,
         "targeting": targeting_spec,
         "start_time": ad_set_start,
@@ -293,7 +302,7 @@ async def create_campaign(request: Request):
     try:
         ad_set_response = requests.post(ad_set_url, json=ad_set_payload)
         logging.debug(f"Ad Set response status: {ad_set_response.status_code}")
-        logging.debug(f"Ad Set response : {ad_set_response.text}")
+        logging.debug(f"Ad Set response: {ad_set_response.text}")
         ad_set_response.raise_for_status()
         ad_set_result = ad_set_response.json()
         ad_set_id = ad_set_result.get("id")
