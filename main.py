@@ -244,6 +244,11 @@ async def create_campaign(request: Request):
         if num_days <= 0:
             num_days = 1
         daily_budget = total_budget_cents // num_days
+        
+        # Check that the daily budget is greater than $5.76 (576 cents)
+        if daily_budget < 576:
+            raise HTTPException(status_code=400, detail="Daily value must be greater than $5.76")
+        
         if (end_dt - start_dt) < timedelta(hours=24):
             raise HTTPException(status_code=400, detail="Campaign duration must be at least 24 hours")
         ad_set_start = int(start_dt.timestamp())
@@ -391,6 +396,10 @@ async def create_campaign(request: Request):
             "ad_set": ad_set_result,
             "ad_creative": ad_creative_result,
             "ad": ad_result
+        },
+        "$.metaerror": {
+            "daily_value_error": "Daily value must be greater than $5.76.",
+            "campaign_duration_error": "Campaign duration must be at least 24 hours."
         }
     }
 
