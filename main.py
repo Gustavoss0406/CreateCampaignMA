@@ -308,9 +308,10 @@ async def create_campaign(request: Request):
     # --- Create Ad Creative ---
     link_data = {
         "message": data.description,
-        "link": data.content if data.content else "https://www.example.com",
+        "link": data.content,
         "picture": data.images[0] if data.images else ""
     }
+
     if data.keywords.lower().startswith("http"):
         link_data["caption"] = data.keywords
     
