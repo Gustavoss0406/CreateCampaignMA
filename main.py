@@ -7,7 +7,7 @@ from fastapi import FastAPI, HTTPException, Request, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import BaseModel, field_validator
 from typing import List
 
 # Detailed logging configuration
@@ -112,10 +112,10 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
 class CampaignRequest(BaseModel):
     account_id: str             # Facebook account ID
     token: str                  # 60-day token
-    campaign_name: str = ""     # Campaign name
+    campaign_name: str          # Campaign name (campo obrigatório)
     objective: str = "OUTCOME_TRAFFIC"  # Campaign objective (default if not provided)
     content_type: str = ""      # Content type (carousel, single image, video)
-    content: str = ""           # Content URL (for single image) or other content
+    content: str                # Content URL to be boosted (campo obrigatório)
     images: List[str] = []      # List of image URLs (for carousel)
     video: str = ""             # Video URL (if campaign is video)
     description: str = ""       # Campaign description (used in the ad message)
@@ -287,13 +287,12 @@ async def create_campaign(request: Request):
         "access_token": data.token
     }
     
-    ad_set_url = f"https://graph.facebook.com/{fb_api_version}/act_{ad_account_id}/adsets"
     logging.debug(f"Ad Set payload: {ad_set_payload}")
     
     try:
-        ad_set_response = requests.post(ad_set_url, json=ad_set_payload)
+        ad_set_response = requests.post(f"https://graph.facebook.com/{fb_api_version}/act_{ad_account_id}/adsets", json=ad_set_payload)
         logging.debug(f"Ad Set response status: {ad_set_response.status_code}")
-        logging.debug(f"Ad Set response content: {ad_set_response.text}")
+        logging.debug(f"Ad Set response : {ad_set_response.text}")
         ad_set_response.raise_for_status()
         ad_set_result = ad_set_response.json()
         ad_set_id = ad_set_result.get("id")
@@ -308,10 +307,9 @@ async def create_campaign(request: Request):
     # --- Create Ad Creative ---
     link_data = {
         "message": data.description,
-        "link": data.content,
+        "link": data.content,  # utiliza a URL informada no body da requisição
         "picture": data.images[0] if data.images else ""
     }
-
     if data.keywords.lower().startswith("http"):
         link_data["caption"] = data.keywords
     
@@ -324,11 +322,10 @@ async def create_campaign(request: Request):
         "access_token": data.token
     }
     
-    ad_creative_url = f"https://graph.facebook.com/{fb_api_version}/act_{ad_account_id}/adcreatives"
     logging.debug(f"Ad Creative payload: {ad_creative_payload}")
     
     try:
-        ad_creative_response = requests.post(ad_creative_url, json=ad_creative_payload)
+        ad_creative_response = requests.post(f"https://graph.facebook.com/{fb_api_version}/act_{ad_account_id}/adcreatives", json=ad_creative_payload)
         logging.debug(f"Ad Creative response status: {ad_creative_response.status_code}")
         logging.debug(f"Ad Creative response content: {ad_creative_response.text}")
         ad_creative_response.raise_for_status()
@@ -351,11 +348,10 @@ async def create_campaign(request: Request):
         "access_token": data.token
     }
     
-    ad_url = f"https://graph.facebook.com/{fb_api_version}/act_{ad_account_id}/ads"
     logging.debug(f"Ad payload: {ad_payload}")
     
     try:
-        ad_response = requests.post(ad_url, json=ad_payload)
+        ad_response = requests.post(f"https://graph.facebook.com/{fb_api_version}/act_{ad_account_id}/ads", json=ad_payload)
         logging.debug(f"Ad response status: {ad_response.status_code}")
         logging.debug(f"Ad response content: {ad_response.text}")
         ad_response.raise_for_status()
