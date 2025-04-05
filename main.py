@@ -113,7 +113,7 @@ def parse_currency_value(value: str) -> float:
     """
     Remove símbolos monetários e interpreta separadores de milhar e decimais.
     Exemplos:
-      "$ 3.000"   -> 3000.0
+      "$ 3.000"    -> 3000.0
       "$ 3.000,50" -> 3000.50
     """
     v_clean = value.replace("$", "").strip()
@@ -204,7 +204,7 @@ class CampaignRequest(BaseModel):
             return cleaned
         return v
 
-    @field_validator("devices", mode="before", always=True)
+    @field_validator("devices", mode="before")
     def set_default_devices(cls, v):
         if not v:
             return ["Desktop", "Smartphone"]
@@ -283,7 +283,7 @@ async def create_campaign(request: Request):
     else:
         genders = []
     
-    # Note que removemos os campos de age (target_age)
+    # Removido o campo target_age da definição de targeting_spec
     targeting_spec = {
         "geo_locations": {"countries": GLOBAL_COUNTRIES},
         "genders": genders,
