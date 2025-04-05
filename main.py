@@ -7,10 +7,10 @@ from fastapi import FastAPI, HTTPException, Request, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 from typing import List
 
-# Configuração detalhada de logging
+# Detailed logging configuration
 logging.basicConfig(
     level=logging.DEBUG,
     stream=sys.stdout,
@@ -21,24 +21,24 @@ app = FastAPI()
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Ajuste conforme necessário
+    allow_origins=["*"],  # Adjust as necessary
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# Lista de códigos de país válidos (formato ISO) para segmentação global
+# List of valid country codes (ISO format) for global targeting
 GLOBAL_COUNTRIES = [
     "US", "CA", "GB", "DE", "FR", "BR", "IN", "MX", "IT",
     "ES", "NL", "SE", "NO", "DK", "FI", "CH", "JP", "KR"
 ]
 
-# Plataformas de publisher válidas para veiculação de anúncios
+# Valid publisher platforms for ad placement
 PUBLISHER_PLATFORMS = ["facebook", "instagram", "audience_network", "messenger"]
 
 def extract_fb_error(response: requests.Response) -> str:
     """
-    Extrai a mensagem de erro (error_user_msg) da resposta da API do Facebook.
+    Extracts the error message (error_user_msg) from the Facebook API response.
     """
     try:
         error_json = response.json()
@@ -48,8 +48,8 @@ def extract_fb_error(response: requests.Response) -> str:
 
 def get_page_id(token: str) -> str:
     """
-    Obtém o ID da primeira página disponível usando o token fornecido.
-    Caso nenhuma página seja encontrada, lança HTTPException com status 533.
+    Gets the first available page ID using the provided token.
+    If no page is found, raises HTTPException with status 533.
     """
     url = f"https://graph.facebook.com/v16.0/me/accounts?access_token={token}"
     logging.debug(f"Fetching available pages: {url}")
@@ -68,9 +68,9 @@ def get_page_id(token: str) -> str:
 
 def check_account_balance(account_id: str, token: str, fb_api_version: str, spend_cap: int):
     """
-    Verifica se a conta possui fundos suficientes.
-    Para contas pré-pagas, o saldo disponível é: spend_cap - amount_spent.
-    Se o saldo disponível for menor que o gasto necessário, lança HTTPException com status 402.
+    Checks if the account has sufficient funds.
+    For prepaid accounts, available balance = spend_cap - amount_spent.
+    If the available balance is less than the required spend_cap, raises HTTPException with status 402.
     """
     url = f"https://graph.facebook.com/{fb_api_version}/act_{account_id}?fields=spend_cap,amount_spent,currency&access_token={token}"
     logging.debug(f"Checking account balance: {url}")
@@ -97,7 +97,7 @@ def check_account_balance(account_id: str, token: str, fb_api_version: str, spen
         logging.error("Error checking account balance.")
         raise HTTPException(status_code=response.status_code, detail="Error checking account balance")
 
-# Handler para erros de validação, retornando uma mensagem simples de erro.
+# Exception handler for validation errors, returning a simple error message.
 @app.exception_handler(RequestValidationError)
 async def validation_exception_handler(request: Request, exc: RequestValidationError):
     try:
@@ -109,45 +109,26 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
         content={"detail": first_message}
     )
 
-def parse_currency_value(value: str) -> float:
-    """
-    Remove símbolos monetários e interpreta separadores de milhar e decimais.
-    Exemplos:
-      "$ 3.000"    -> 3000.0
-      "$ 3.000,50" -> 3000.50
-    """
-    v_clean = value.replace("$", "").strip()
-    if "," in v_clean and "." in v_clean:
-        # Supondo que o ponto seja separador de milhar e a vírgula o decimal.
-        v_clean = v_clean.replace(".", "").replace(",", ".")
-    elif "." in v_clean:
-        parts = v_clean.split(".")
-        if len(parts[-1]) == 3:
-            # Se os últimos três dígitos forem após o ponto, assumimos separador de milhar.
-            v_clean = "".join(parts)
-    elif "," in v_clean:
-        v_clean = v_clean.replace(",", ".")
-    return float(v_clean)
-
 class CampaignRequest(BaseModel):
-    account_id: str             # ID da conta do Facebook
-    token: str                  # Token de 60 dias
-    campaign_name: str          # Nome da campanha (campo obrigatório)
-    objective: str = "OUTCOME_TRAFFIC"  # Objetivo da campanha (valor padrão se não informado)
-    content_type: str = ""      # Tipo de conteúdo (carousel, imagem única, vídeo)
-    content: str                # URL do conteúdo a ser impulsionado (campo obrigatório)
-    images: List[str] = []      # Lista de URLs de imagens (para carousel)
-    video: str = ""             # URL do vídeo (se a campanha for de vídeo)
-    description: str = ""       # Descrição da campanha (utilizada na mensagem do anúncio)
-    keywords: str = ""          # Palavras-chave (utilizadas como legenda do anúncio)
-    budget: float = 0.0         # Orçamento total (em dólares, ex.: "300.00")
-    initial_date: str = ""      # Data de início (ex.: "04/03/2025")
-    final_date: str = ""        # Data final (ex.: "04/04/2025")
-    pricing_model: str = ""     # Modelo de precificação (CPC, CPA, etc.)
-    target_sex: str = ""        # Sexo alvo (ex.: "Male", "Female", "All")
-    min_salary: float = 0.0     # Salário mínimo
-    max_salary: float = 0.0     # Salário máximo
-    devices: List[str] = []     # Dispositivos; se vazio, será definido como ["Desktop", "Smartphone"]
+    account_id: str             # Facebook account ID
+    token: str                  # 60-day token
+    campaign_name: str = ""     # Campaign name
+    objective: str = "OUTCOME_TRAFFIC"  # Campaign objective (default if not provided)
+    content_type: str = ""      # Content type (carousel, single image, video)
+    content: str = ""           # Content URL (for single image) or other content
+    images: List[str] = []      # List of image URLs (for carousel)
+    video: str = ""             # Video URL (if campaign is video)
+    description: str = ""       # Campaign description (used in the ad message)
+    keywords: str = ""          # Keywords (used as ad caption)
+    budget: float = 0.0         # Total budget (in dollars, e.g., "$300.00")
+    initial_date: str = ""      # Start date (e.g., "04/03/2025")
+    final_date: str = ""        # End date (e.g., "04/04/2025")
+    pricing_model: str = ""     # Pricing model (CPC, CPA, etc.)
+    target_sex: str = ""        # Target gender (e.g., "Male", "Female", "All")
+    target_age: int = 0         # Target age (if given as a single value)
+    min_salary: float = 0.0     # Minimum salary
+    max_salary: float = 0.0     # Maximum salary
+    devices: List[str] = []     # Devices (sent but not used in targeting)
 
     @field_validator("objective", mode="before")
     def validate_objective(cls, v):
@@ -177,8 +158,9 @@ class CampaignRequest(BaseModel):
     @field_validator("min_salary", mode="before")
     def parse_min_salary(cls, v):
         if isinstance(v, str):
+            v_clean = v.replace("$", "").replace(" ", "").replace(",", ".")
             try:
-                parsed = parse_currency_value(v)
+                parsed = float(v_clean)
                 logging.debug(f"min_salary converted: {parsed}")
                 return parsed
             except Exception as e:
@@ -188,8 +170,9 @@ class CampaignRequest(BaseModel):
     @field_validator("max_salary", mode="before")
     def parse_max_salary(cls, v):
         if isinstance(v, str):
+            v_clean = v.replace("$", "").replace(" ", "").replace(",", ".")
             try:
-                parsed = parse_currency_value(v)
+                parsed = float(v_clean)
                 logging.debug(f"max_salary converted: {parsed}")
                 return parsed
             except Exception as e:
@@ -202,12 +185,6 @@ class CampaignRequest(BaseModel):
             cleaned = [s.strip().rstrip(";") if isinstance(s, str) else s for s in v]
             logging.debug(f"Cleaned image URLs: {cleaned}")
             return cleaned
-        return v
-
-    @field_validator("devices", mode="before")
-    def set_default_devices(cls, v):
-        if not v:
-            return ["Desktop", "Smartphone"]
         return v
 
 @app.post("/create_campaign")
@@ -228,13 +205,13 @@ async def create_campaign(request: Request):
     ad_account_id = data.account_id
     campaign_url = f"https://graph.facebook.com/{fb_api_version}/act_{ad_account_id}/campaigns"
     
-    # Calcula o orçamento total em centavos
+    # Calculate total budget in cents
     total_budget_cents = int(data.budget * 100)
     
-    # Verifica o saldo da conta antes de prosseguir
+    # Check account balance before proceeding
     check_account_balance(ad_account_id, data.token, fb_api_version, total_budget_cents)
     
-    # --- Criação da Campanha ---
+    # --- Create Campaign ---
     campaign_payload = {
         "name": data.campaign_name,
         "objective": data.objective,
@@ -258,7 +235,7 @@ async def create_campaign(request: Request):
         logging.error("Error creating campaign via Facebook API", exc_info=True)
         raise HTTPException(status_code=400, detail=f"Error creating campaign: {error_msg}")
     
-    # --- Calcula o orçamento diário para o Ad Set ---
+    # --- Calculate daily budget for Ad Set ---
     try:
         start_dt = datetime.strptime(data.initial_date, "%m/%d/%Y")
         end_dt = datetime.strptime(data.final_date, "%m/%d/%Y")
@@ -274,8 +251,9 @@ async def create_campaign(request: Request):
         logging.warning("Error processing dates; using fallback values")
         ad_set_start = data.initial_date
         ad_set_end = data.final_date
-        daily_budget = total_budget_cents
+        daily_budget = total_budget_cents  # fallback
     
+    # --- Create Ad Set ---
     if data.target_sex.lower() == "male":
         genders = [1]
     elif data.target_sex.lower() == "female":
@@ -283,14 +261,15 @@ async def create_campaign(request: Request):
     else:
         genders = []
     
-    # Removido o campo target_age da definição de targeting_spec
     targeting_spec = {
         "geo_locations": {"countries": GLOBAL_COUNTRIES},
         "genders": genders,
+        "age_min": data.target_age,
+        "age_max": data.target_age,
         "publisher_platforms": PUBLISHER_PLATFORMS
     }
     
-    # Obtém o ID da página para os campos DSA
+    # Get page ID for DSA fields
     page_id = get_page_id(data.token)
     
     ad_set_payload = {
@@ -308,12 +287,13 @@ async def create_campaign(request: Request):
         "access_token": data.token
     }
     
+    ad_set_url = f"https://graph.facebook.com/{fb_api_version}/act_{ad_account_id}/adsets"
     logging.debug(f"Ad Set payload: {ad_set_payload}")
     
     try:
-        ad_set_response = requests.post(f"https://graph.facebook.com/{fb_api_version}/act_{ad_account_id}/adsets", json=ad_set_payload)
+        ad_set_response = requests.post(ad_set_url, json=ad_set_payload)
         logging.debug(f"Ad Set response status: {ad_set_response.status_code}")
-        logging.debug(f"Ad Set response: {ad_set_response.text}")
+        logging.debug(f"Ad Set response : {ad_set_response.text}")
         ad_set_response.raise_for_status()
         ad_set_result = ad_set_response.json()
         ad_set_id = ad_set_result.get("id")
@@ -321,14 +301,14 @@ async def create_campaign(request: Request):
     except requests.exceptions.HTTPError as e:
         error_msg = extract_fb_error(ad_set_response)
         logging.error("Error creating Ad Set via Facebook API", exc_info=True)
-        # Rollback: deleta a campanha
+        # Rollback: delete campaign
         requests.delete(f"https://graph.facebook.com/{fb_api_version}/{campaign_id}?access_token={data.token}")
         raise HTTPException(status_code=400, detail=f"Error creating Ad Set: {error_msg}")
     
-    # --- Criação do Ad Creative ---
+    # --- Create Ad Creative ---
     link_data = {
         "message": data.description,
-        "link": data.content,  # utiliza a URL informada no campo 'content'
+        "link": data.content if data.content else "https://www.example.com",
         "picture": data.images[0] if data.images else ""
     }
     if data.keywords.lower().startswith("http"):
@@ -343,10 +323,11 @@ async def create_campaign(request: Request):
         "access_token": data.token
     }
     
+    ad_creative_url = f"https://graph.facebook.com/{fb_api_version}/act_{ad_account_id}/adcreatives"
     logging.debug(f"Ad Creative payload: {ad_creative_payload}")
     
     try:
-        ad_creative_response = requests.post(f"https://graph.facebook.com/{fb_api_version}/act_{ad_account_id}/adcreatives", json=ad_creative_payload)
+        ad_creative_response = requests.post(ad_creative_url, json=ad_creative_payload)
         logging.debug(f"Ad Creative response status: {ad_creative_response.status_code}")
         logging.debug(f"Ad Creative response content: {ad_creative_response.text}")
         ad_creative_response.raise_for_status()
@@ -356,11 +337,11 @@ async def create_campaign(request: Request):
     except requests.exceptions.HTTPError as e:
         error_msg = extract_fb_error(ad_creative_response)
         logging.error("Error creating Ad Creative via Facebook API", exc_info=True)
-        # Rollback: deleta a campanha
+        # Rollback: delete campaign
         requests.delete(f"https://graph.facebook.com/{fb_api_version}/{campaign_id}?access_token={data.token}")
         raise HTTPException(status_code=400, detail=f"Error creating Ad Creative: {error_msg}")
     
-    # --- Criação do Ad ---
+    # --- Create Ad ---
     ad_payload = {
         "name": f"Ad for {data.campaign_name}",
         "adset_id": ad_set_id,
@@ -369,10 +350,11 @@ async def create_campaign(request: Request):
         "access_token": data.token
     }
     
+    ad_url = f"https://graph.facebook.com/{fb_api_version}/act_{ad_account_id}/ads"
     logging.debug(f"Ad payload: {ad_payload}")
     
     try:
-        ad_response = requests.post(f"https://graph.facebook.com/{fb_api_version}/act_{ad_account_id}/ads", json=ad_payload)
+        ad_response = requests.post(ad_url, json=ad_payload)
         logging.debug(f"Ad response status: {ad_response.status_code}")
         logging.debug(f"Ad response content: {ad_response.text}")
         ad_response.raise_for_status()
@@ -382,7 +364,7 @@ async def create_campaign(request: Request):
     except requests.exceptions.HTTPError as e:
         error_msg = extract_fb_error(ad_response)
         logging.error("Error creating Ad via Facebook API", exc_info=True)
-        # Rollback: deleta a campanha (que deve excluir em cascata ad set, ad creative, etc.)
+        # Rollback: delete campaign (which should cascade delete ad set, ad creative, etc.)
         requests.delete(f"https://graph.facebook.com/{fb_api_version}/{campaign_id}?access_token={data.token}")
         raise HTTPException(status_code=400, detail=f"Error creating Ad: {error_msg}")
     
