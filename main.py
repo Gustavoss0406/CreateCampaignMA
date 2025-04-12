@@ -110,39 +110,40 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
     )
 
 class CampaignRequest(BaseModel):
-    account_id: str  # ID da conta do Facebook
-    token: str  # Token válido por 60 dias
-    campaign_name: str = ""  # Nome da campanha
+    account_id: str               # ID da conta do Facebook
+    token: str                    # Token válido por 60 dias
+    campaign_name: str = ""       # Nome da campanha
     objective: str = "OUTCOME_TRAFFIC"  # Objetivo da campanha (valor default se não fornecido)
-    content: str = ""  # URL de destino (por exemplo, link da landing page)
-    description: str = ""  # Descrição da campanha (usada na mensagem do anúncio)
-    keywords: str = ""  # Palavras-chave (usadas como legenda do anúncio)
-    budget: float = 0.0  # Orçamento total (em dólares, por exemplo, "$300.00")
-    initial_date: str = ""  # Data de início (ex.: "04/03/2025")
-    final_date: str = ""  # Data final (ex.: "04/04/2025")
-    pricing_model: str = ""  # Modelo de precificação (CPC, CPA, etc.)
-    target_sex: str = ""  # Gênero alvo (ex.: "Male", "Female", "All")
-    target_age: int = 0  # Idade alvo (se fornecida como valor único)
-    min_salary: float = 0.0  # Salário mínimo
-    max_salary: float = 0.0  # Salário máximo
-    devices: List[str] = []  # Dispositivos (informados mas não utilizados no direcionamento)
+    content: str = ""             # URL de destino (por exemplo, link da landing page)
+    description: str = ""         # Descrição da campanha (usada na mensagem do anúncio)
+    keywords: str = ""            # Palavras-chave (usadas como legenda do anúncio)
+    budget: float = 0.0           # Orçamento total (em dólares, ex.: "$300.00")
+    initial_date: str = ""        # Data de início (ex.: "04/03/2025")
+    final_date: str = ""          # Data final (ex.: "04/04/2025")
+    pricing_model: str = ""       # Modelo de precificação (CPC, CPA, etc.)
+    target_sex: str = ""          # Gênero alvo (ex.: "Male", "Female", "All")
+    target_age: int = 0           # Idade alvo
+    min_salary: float = 0.0       # Salário mínimo
+    max_salary: float = 0.0       # Salário máximo
+    devices: List[str] = []       # Dispositivos (informados, mas não utilizados no direcionamento)
 
     # Novos campos para mídia:
     single_image: str = Field(default="", alias="Single Image")  # Imagem única
-    url1Carrossel: str = ""  # Primeira URL para carrossel
-    url2Carrossel: str = ""  # Segunda URL para carrossel
-    url3Carrossel: str = ""  # Terceira URL para carrossel
-    url4Carrossel: str = ""  # Quarta URL para carrossel
-    url5Carrossel: str = ""  # Quinta URL para carrossel
-    video: str = Field(default="", alias="Video")  # Vídeo
+    url1Carrossel: str = ""       # Primeira URL para carrossel
+    url2Carrossel: str = ""       # Segunda URL para carrossel
+    url3Carrossel: str = ""       # Terceira URL para carrossel
+    url4Carrossel: str = ""       # Quarta URL para carrossel
+    url5Carrossel: str = ""       # Quinta URL para carrossel
+    video: str = Field(default="", alias="Video")    # Vídeo
 
     @field_validator("objective", mode="before")
     def validate_objective(cls, v):
+        # Mapeamento dos objetivos de entrada para nomenclaturas internas
         mapping = {
-            "Brand Awareness": "OUTCOME_AWARENESS",
-            "Leads": "OUTCOME_LEADS",
-            "Sales": "OUTCOME_SALES",
-            "Vendas": "OUTCOME_SALES"
+            "Vendas": "FOCO_LEADS",
+            "Promover site/app": "FOCO_CLICKS",
+            "Leads": "FOCO_LEADS",
+            "Alcance de marca": "FOCO_IMPRESSOES"
         }
         if isinstance(v, str) and v in mapping:
             converted = mapping[v]
@@ -260,9 +261,9 @@ async def create_campaign(request: Request):
         daily_budget = total_budget_cents  # fallback
 
     # --- Determinar a meta de otimização com base no objetivo ---
-    if data.objective == "OUTCOME_AWARENESS":
-        optimization_goal = "REACH"
-    elif data.objective in ["OUTCOME_LEADS", "OUTCOME_SALES"]:
+    if data.objective == "FOCO_IMPRESSOES":
+        optimization_goal = "IMPRESSIONS"
+    elif data.objective in ["FOCO_CLICKS", "FOCO_LEADS"]:
         optimization_goal = "LINK_CLICKS"
     else:
         optimization_goal = "REACH"
