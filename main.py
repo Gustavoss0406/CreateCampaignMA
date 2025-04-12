@@ -18,7 +18,6 @@ logging.basicConfig(
 )
 
 app = FastAPI()
-
 logging.debug("Aplicação FastAPI iniciada.")
 
 app.add_middleware(
@@ -109,7 +108,6 @@ def check_account_balance(account_id: str, token: str, fb_api_version: str, spen
         logging.error("Erro ao verificar o saldo da conta na API do Facebook.")
         raise HTTPException(status_code=response.status_code, detail="Erro ao verificar o saldo da conta")
 
-# Handler para erros de validação, retornando uma mensagem de erro simples.
 @app.exception_handler(RequestValidationError)
 async def validation_exception_handler(request: Request, exc: RequestValidationError):
     logging.error(f"Erro de validação na requisição: {exc.errors()}")
@@ -152,12 +150,12 @@ class CampaignRequest(BaseModel):
     @field_validator("objective", mode="before")
     def validate_objective(cls, v):
         logging.debug(f"Validando objetivo recebido: {v}")
-        # Mapeamento dos objetivos de entrada para nomenclaturas internas
+        # Mapeamento dos objetivos de entrada para valores válidos na API do Facebook
         mapping = {
-            "Vendas": "FOCO_LEADS",
-            "Promover site/app": "FOCO_CLICKS",
-            "Leads": "FOCO_LEADS",
-            "Alcance de marca": "FOCO_IMPRESSOES"
+            "Vendas": "OUTCOME_SALES",
+            "Promover site/app": "LINK_CLICKS",
+            "Leads": "OUTCOME_LEADS",
+            "Alcance de marca": "BRAND_AWARENESS"
         }
         if isinstance(v, str) and v in mapping:
             converted = mapping[v]
@@ -291,9 +289,11 @@ async def create_campaign(request: Request):
         logging.debug(f"Valores de fallback - ad_set_start: {ad_set_start}, ad_set_end: {ad_set_end}, daily_budget: {daily_budget}")
 
     # --- Determinar a meta de otimização com base no objetivo ---
-    if data.objective == "FOCO_IMPRESSOES":
+    if data.objective == "BRAND_AWARENESS":
         optimization_goal = "IMPRESSIONS"
-    elif data.objective in ["FOCO_CLICKS", "FOCO_LEADS"]:
+    elif data.objective == "LINK_CLICKS":
+        optimization_goal = "LINK_CLICKS"
+    elif data.objective in ["OUTCOME_LEADS", "OUTCOME_SALES"]:
         optimization_goal = "LINK_CLICKS"
     else:
         optimization_goal = "REACH"
@@ -351,7 +351,6 @@ async def create_campaign(request: Request):
     except requests.exceptions.HTTPError as e:
         error_msg = extract_fb_error(ad_set_response)
         logging.error("Erro ao criar Ad Set via API do Facebook", exc_info=True)
-        # Rollback: deletar a campanha
         rollback_url = f"https://graph.facebook.com/{fb_api_version}/{campaign_id}?access_token={data.token}"
         logging.debug(f"Executando rollback da campanha em: {rollback_url}")
         requests.delete(rollback_url)
@@ -363,7 +362,6 @@ async def create_campaign(request: Request):
     logging.debug(f"Default link definido: {default_link}")
     logging.debug(f"Default message definido: {default_message}")
 
-    # Nova lógica: Verifica qual campo de mídia está preenchido (priorizando vídeo > carrossel > imagem única)
     if data.video:
         logging.info("Campo de vídeo encontrado, utilizando video_data")
         creative_spec = {
@@ -406,7 +404,7 @@ async def create_campaign(request: Request):
             "link_data": {
                 "message": default_message,
                 "link": default_link,
-                "picture": default_link  # ou outro valor padrão
+                "picture": default_link
             }
         }
     logging.debug(f"Creative spec definido: {creative_spec}")
@@ -440,7 +438,6 @@ async def create_campaign(request: Request):
         requests.delete(rollback_url)
         raise HTTPException(status_code=400, detail=f"Erro ao criar Ad Creative: {error_msg}")
 
-    # --- Criação do Ad ---
     ad_payload = {
         "name": f"Ad for {data.campaign_name}",
         "adset_id": ad_set_id,
@@ -471,8 +468,8 @@ async def create_campaign(request: Request):
 
     campaign_link = f"https://www.facebook.com/adsmanager/manage/campaigns?act={ad_account_id}&campaign_ids={campaign_id}"
     logging.info(f"Campaign link: {campaign_link}")
-
     logging.info("Processo de criação de campanha finalizado com sucesso.")
+
     return {
         "status": "success",
         "campaign_id": campaign_id,
