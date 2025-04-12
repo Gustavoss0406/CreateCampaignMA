@@ -150,12 +150,13 @@ class CampaignRequest(BaseModel):
     @field_validator("objective", mode="before")
     def validate_objective(cls, v):
         logging.debug(f"Validando objetivo recebido: {v}")
-        # Mapeamento dos objetivos de entrada para valores válidos na API do Facebook
+        # Mapeamento dos objetivos de entrada para valores válidos na API do Facebook.
+        # Valores permitidos são: OUTCOME_LEADS, OUTCOME_SALES, OUTCOME_ENGAGEMENT, OUTCOME_AWARENESS, OUTCOME_TRAFFIC, OUTCOME_APP_PROMOTION.
         mapping = {
             "Vendas": "OUTCOME_SALES",
-            "Promover site/app": "LINK_CLICKS",
+            "Promover site/app": "OUTCOME_TRAFFIC",  # Ajustado para valor permitido
             "Leads": "OUTCOME_LEADS",
-            "Alcance de marca": "BRAND_AWARENESS"
+            "Alcance de marca": "OUTCOME_AWARENESS"
         }
         if isinstance(v, str) and v in mapping:
             converted = mapping[v]
@@ -289,11 +290,9 @@ async def create_campaign(request: Request):
         logging.debug(f"Valores de fallback - ad_set_start: {ad_set_start}, ad_set_end: {ad_set_end}, daily_budget: {daily_budget}")
 
     # --- Determinar a meta de otimização com base no objetivo ---
-    if data.objective == "BRAND_AWARENESS":
+    if data.objective == "OUTCOME_AWARENESS":
         optimization_goal = "IMPRESSIONS"
-    elif data.objective == "LINK_CLICKS":
-        optimization_goal = "LINK_CLICKS"
-    elif data.objective in ["OUTCOME_LEADS", "OUTCOME_SALES"]:
+    elif data.objective in ["OUTCOME_TRAFFIC", "OUTCOME_LEADS", "OUTCOME_SALES"]:
         optimization_goal = "LINK_CLICKS"
     else:
         optimization_goal = "REACH"
