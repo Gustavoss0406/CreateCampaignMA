@@ -139,22 +139,19 @@ class CampaignRequest(BaseModel):
     devices: List[str] = []       # Dispositivos (informados mas não utilizados no direcionamento)
 
     # Novos campos para mídia:
-    single_image: str = Field(default="", alias="Single Image")  # Imagem única
-    url1Carrossel: str = ""       # Primeira URL para carrossel
-    url2Carrossel: str = ""       # Segunda URL para carrossel
-    url3Carrossel: str = ""       # Terceira URL para carrossel
-    url4Carrossel: str = ""       # Quarta URL para carrossel
-    url5Carrossel: str = ""       # Quinta URL para carrossel
+    single_image: str = Field(default="", alias="Single Image")  # Campo antigo para imagem única (opcional)
+    image: str = ""  # Novo campo para imagem estática; se preenchido, prevalece sobre carrossel
+    carrossel: List[str] = []  # Lista de URLs para carrossel
     video: str = Field(default="", alias="Video")    # Vídeo
 
     @field_validator("objective", mode="before")
     def validate_objective(cls, v):
         logging.debug(f"Validando objetivo recebido: {v}")
         # Mapeamento dos objetivos de entrada para valores válidos na API do Facebook.
-        # Valores permitidos são: OUTCOME_LEADS, OUTCOME_SALES, OUTCOME_ENGAGEMENT, OUTCOME_AWARENESS, OUTCOME_TRAFFIC, OUTCOME_APP_PROMOTION.
+        # Valores permitidos: OUTCOME_LEADS, OUTCOME_SALES, OUTCOME_ENGAGEMENT, OUTCOME_AWARENESS, OUTCOME_TRAFFIC, OUTCOME_APP_PROMOTION.
         mapping = {
             "Vendas": "OUTCOME_SALES",
-            "Promover site/app": "OUTCOME_TRAFFIC",  # Ajustado para valor permitido
+            "Promover site/app": "OUTCOME_TRAFFIC",  # Valor permitido
             "Leads": "OUTCOME_LEADS",
             "Alcance de marca": "OUTCOME_AWARENESS"
         }
@@ -356,29 +353,46 @@ async def create_campaign(request: Request):
         raise HTTPException(status_code=400, detail=f"Erro ao criar Ad Set: {error_msg}")
 
     # --- Criação do Ad Creative ---
-    default_link = data.content if data.content else "https://www.example.com"
+    # Processa o default_link: se o campo "content" estiver vazio, utiliza um fallback.
+    default_link = data.content.strip() if data.content.strip() else "https://www.adstock.ai"
     default_message = data.description
-    logging.debug(f"Default link definido: {default_link}")
+    logging.debug(f"Default link definido (limpo): {default_link}")
     logging.debug(f"Default message definido: {default_message}")
 
-    if data.video:
+    # Função auxiliar para verificar se uma URL aponta para uma imagem válida.
+    def is_valid_image_url(url: str) -> bool:
+        url = url.lower()
+        return url.endswith(".jpg") or url.endswith(".jpeg") or url.endswith(".png")
+
+    # Lógica de seleção de mídia:
+    # Prioridade: video > image > carrossel > fallback.
+    if data.video.strip():
         logging.info("Campo de vídeo encontrado, utilizando video_data")
         creative_spec = {
             "video_data": {
-                "video_id": data.video,
+                "video_id": data.video.strip(),
                 "title": data.campaign_name,
                 "message": default_message
             }
         }
-    elif any([data.url1Carrossel, data.url2Carrossel, data.url3Carrossel, data.url4Carrossel, data.url5Carrossel]):
+    elif data.image.strip():
+        logging.info("Campo 'image' preenchido; utilizando imagem estática")
+        creative_spec = {
+            "link_data": {
+                "message": default_message,
+                "link": default_link,
+                "picture": data.image.strip()
+            }
+        }
+    elif data.carrossel and any(url.strip() for url in data.carrossel):
         logging.info("Campo de carrossel encontrado, montando child attachments")
         child_attachments = []
-        for url in [data.url1Carrossel, data.url2Carrossel, data.url3Carrossel, data.url4Carrossel, data.url5Carrossel]:
-            if url:
-                logging.debug(f"Adicionando attachment do carrossel com URL: {url}")
+        for url in data.carrossel:
+            if url.strip():
+                logging.debug(f"Adicionando attachment do carrossel com URL: {url.strip()}")
                 child_attachments.append({
                     "link": default_link,
-                    "picture": url,
+                    "picture": url.strip(),
                     "message": default_message,
                 })
         creative_spec = {
@@ -388,22 +402,14 @@ async def create_campaign(request: Request):
                 "link": default_link,
             }
         }
-    elif data.single_image:
-        logging.info("Campo de imagem única encontrado, utilizando link_data com imagem única")
-        creative_spec = {
-            "link_data": {
-                "message": default_message,
-                "link": default_link,
-                "picture": data.single_image
-            }
-        }
     else:
-        logging.warning("Nenhum campo de mídia encontrado, utilizando fallback padrão para criativo")
+        logging.warning("Nenhum campo de mídia encontrado; utilizando fallback com imagem placeholder")
+        fallback_image = "https://via.placeholder.com/1200x628.png?text=Ad+Placeholder"
         creative_spec = {
             "link_data": {
                 "message": default_message,
                 "link": default_link,
-                "picture": default_link
+                "picture": fallback_image
             }
         }
     logging.debug(f"Creative spec definido: {creative_spec}")
