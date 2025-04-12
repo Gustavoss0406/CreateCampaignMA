@@ -110,22 +110,22 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
     )
 
 class CampaignRequest(BaseModel):
-    account_id: str             # ID da conta do Facebook
-    token: str                  # Token válido por 60 dias
-    campaign_name: str = ""     # Nome da campanha
+    account_id: str  # ID da conta do Facebook
+    token: str  # Token válido por 60 dias
+    campaign_name: str = ""  # Nome da campanha
     objective: str = "OUTCOME_TRAFFIC"  # Objetivo da campanha (valor default se não fornecido)
-    content: str = ""           # URL de destino (por exemplo, link da landing page)
-    description: str = ""       # Descrição da campanha (usada na mensagem do anúncio)
-    keywords: str = ""          # Palavras-chave (usadas como legenda do anúncio)
-    budget: float = 0.0         # Orçamento total (em dólares, por exemplo, "$300.00")
-    initial_date: str = ""      # Data de início (ex.: "04/03/2025")
-    final_date: str = ""        # Data final (ex.: "04/04/2025")
-    pricing_model: str = ""     # Modelo de precificação (CPC, CPA, etc.)
-    target_sex: str = ""        # Gênero alvo (ex.: "Male", "Female", "All")
-    target_age: int = 0         # Idade alvo (se fornecida como valor único)
-    min_salary: float = 0.0     # Salário mínimo
-    max_salary: float = 0.0     # Salário máximo
-    devices: List[str] = []     # Dispositivos (informados mas não utilizados no direcionamento)
+    content: str = ""  # URL de destino (por exemplo, link da landing page)
+    description: str = ""  # Descrição da campanha (usada na mensagem do anúncio)
+    keywords: str = ""  # Palavras-chave (usadas como legenda do anúncio)
+    budget: float = 0.0  # Orçamento total (em dólares, por exemplo, "$300.00")
+    initial_date: str = ""  # Data de início (ex.: "04/03/2025")
+    final_date: str = ""  # Data final (ex.: "04/04/2025")
+    pricing_model: str = ""  # Modelo de precificação (CPC, CPA, etc.)
+    target_sex: str = ""  # Gênero alvo (ex.: "Male", "Female", "All")
+    target_age: int = 0  # Idade alvo (se fornecida como valor único)
+    min_salary: float = 0.0  # Salário mínimo
+    max_salary: float = 0.0  # Salário máximo
+    devices: List[str] = []  # Dispositivos (informados mas não utilizados no direcionamento)
 
     # Novos campos para mídia:
     single_image: str = Field(default="", alias="Single Image")  # Imagem única
@@ -164,27 +164,29 @@ class CampaignRequest(BaseModel):
 
     @field_validator("min_salary", mode="before")
     def parse_min_salary(cls, v):
-        if isinstance(v, str):
-            v_clean = v.replace("$", "").replace(" ", "").replace(",", ".")
-            try:
-                parsed = float(v_clean)
-                logging.debug(f"min_salary convertido: {parsed}")
-                return parsed
-            except Exception as e:
-                raise ValueError(f"min_salary inválido: {v}") from e
-        return v
+        if v in [None, ""]:
+            logging.debug("min_salary ausente, usando valor padrão 2000.0")
+            return 2000.0
+        v_clean = str(v).replace("$", "").replace(" ", "").replace(",", ".")
+        try:
+            parsed = float(v_clean)
+            logging.debug(f"min_salary convertido: {parsed}")
+            return parsed
+        except Exception as e:
+            raise ValueError(f"min_salary inválido: {v}") from e
 
     @field_validator("max_salary", mode="before")
     def parse_max_salary(cls, v):
-        if isinstance(v, str):
-            v_clean = v.replace("$", "").replace(" ", "").replace(",", ".")
-            try:
-                parsed = float(v_clean)
-                logging.debug(f"max_salary convertido: {parsed}")
-                return parsed
-            except Exception as e:
-                raise ValueError(f"max_salary inválido: {v}") from e
-        return v
+        if v in [None, ""]:
+            logging.debug("max_salary ausente, usando valor padrão 20000.0")
+            return 20000.0
+        v_clean = str(v).replace("$", "").replace(" ", "").replace(",", ".")
+        try:
+            parsed = float(v_clean)
+            logging.debug(f"max_salary convertido: {parsed}")
+            return parsed
+        except Exception as e:
+            raise ValueError(f"max_salary inválido: {v}") from e
 
 @app.post("/create_campaign")
 async def create_campaign(request: Request):
@@ -199,17 +201,17 @@ async def create_campaign(request: Request):
     except Exception as e:
         logging.exception("Erro ao ler ou parsear o corpo da requisição")
         raise HTTPException(status_code=400, detail="Erro ao ler ou parsear o corpo da requisição")
-    
+
     fb_api_version = "v16.0"
     ad_account_id = data.account_id
     campaign_url = f"https://graph.facebook.com/{fb_api_version}/act_{ad_account_id}/campaigns"
-    
+
     # Converte o orçamento total para centavos
     total_budget_cents = int(data.budget * 100)
-    
+
     # Verifica o saldo da conta antes de prosseguir
     check_account_balance(ad_account_id, data.token, fb_api_version, total_budget_cents)
-    
+
     # --- Criação da Campanha ---
     campaign_payload = {
         "name": data.campaign_name,
@@ -218,9 +220,9 @@ async def create_campaign(request: Request):
         "access_token": data.token,
         "special_ad_categories": []
     }
-    
+
     logging.debug(f"Payload da campanha: {campaign_payload}")
-    
+
     try:
         campaign_response = requests.post(campaign_url, json=campaign_payload)
         logging.debug(f"Código de status da criação da campanha: {campaign_response.status_code}")
@@ -233,7 +235,7 @@ async def create_campaign(request: Request):
         error_msg = extract_fb_error(campaign_response)
         logging.error("Erro ao criar campanha via API do Facebook", exc_info=True)
         raise HTTPException(status_code=400, detail=f"Erro ao criar campanha: {error_msg}")
-    
+
     # --- Cálculo do orçamento diário para o Ad Set ---
     try:
         start_dt = datetime.strptime(data.initial_date, "%m/%d/%Y")
@@ -242,11 +244,11 @@ async def create_campaign(request: Request):
         if num_days <= 0:
             num_days = 1
         daily_budget = total_budget_cents // num_days
-        
+
         # Verifica se o orçamento diário é maior que $5.76 (576 centavos)
         if daily_budget < 576:
             raise HTTPException(status_code=400, detail="O valor diário deve ser maior que $5.76")
-        
+
         if (end_dt - start_dt) < timedelta(hours=24):
             raise HTTPException(status_code=400, detail="A duração da campanha deve ser de pelo menos 24 horas")
         ad_set_start = int(start_dt.timestamp())
@@ -264,7 +266,7 @@ async def create_campaign(request: Request):
         optimization_goal = "LINK_CLICKS"
     else:
         optimization_goal = "REACH"
-    
+
     # --- Criação do Ad Set ---
     if data.target_sex.lower() == "male":
         genders = [1]
@@ -272,7 +274,7 @@ async def create_campaign(request: Request):
         genders = [2]
     else:
         genders = []
-    
+
     targeting_spec = {
         "geo_locations": {"countries": GLOBAL_COUNTRIES},
         "genders": genders,
@@ -280,10 +282,10 @@ async def create_campaign(request: Request):
         "age_max": data.target_age,
         "publisher_platforms": PUBLISHER_PLATFORMS
     }
-    
+
     # Obtém o page_id para os campos DSA
     page_id = get_page_id(data.token)
-    
+
     ad_set_payload = {
         "name": f"Ad Set for {data.campaign_name}",
         "campaign_id": campaign_id,
@@ -298,10 +300,10 @@ async def create_campaign(request: Request):
         "dsa_payor": page_id,
         "access_token": data.token
     }
-    
+
     ad_set_url = f"https://graph.facebook.com/{fb_api_version}/act_{ad_account_id}/adsets"
     logging.debug(f"Payload do Ad Set: {ad_set_payload}")
-    
+
     try:
         ad_set_response = requests.post(ad_set_url, json=ad_set_payload)
         logging.debug(f"Código de status do Ad Set: {ad_set_response.status_code}")
@@ -316,7 +318,7 @@ async def create_campaign(request: Request):
         # Rollback: deletar a campanha
         requests.delete(f"https://graph.facebook.com/{fb_api_version}/{campaign_id}?access_token={data.token}")
         raise HTTPException(status_code=400, detail=f"Erro ao criar Ad Set: {error_msg}")
-    
+
     # --- Criação do Ad Creative ---
     default_link = data.content if data.content else "https://www.example.com"
     default_message = data.description
@@ -376,7 +378,7 @@ async def create_campaign(request: Request):
         "access_token": data.token
     }
     logging.debug(f"Payload do Ad Creative: {ad_creative_payload}")
-    
+
     ad_creative_url = f"https://graph.facebook.com/{fb_api_version}/act_{ad_account_id}/adcreatives"
     try:
         ad_creative_response = requests.post(ad_creative_url, json=ad_creative_payload)
@@ -392,7 +394,7 @@ async def create_campaign(request: Request):
         # Rollback: deletar a campanha
         requests.delete(f"https://graph.facebook.com/{fb_api_version}/{campaign_id}?access_token={data.token}")
         raise HTTPException(status_code=400, detail=f"Erro ao criar Ad Creative: {error_msg}")
-    
+
     # --- Criação do Ad ---
     ad_payload = {
         "name": f"Ad for {data.campaign_name}",
@@ -401,10 +403,10 @@ async def create_campaign(request: Request):
         "status": "ACTIVE",
         "access_token": data.token
     }
-    
+
     ad_url = f"https://graph.facebook.com/{fb_api_version}/act_{ad_account_id}/ads"
     logging.debug(f"Payload do Ad: {ad_payload}")
-    
+
     try:
         ad_response = requests.post(ad_url, json=ad_payload)
         logging.debug(f"Código de status do Ad: {ad_response.status_code}")
@@ -419,9 +421,9 @@ async def create_campaign(request: Request):
         # Rollback: deletar a campanha
         requests.delete(f"https://graph.facebook.com/{fb_api_version}/{campaign_id}?access_token={data.token}")
         raise HTTPException(status_code=400, detail=f"Erro ao criar Ad: {error_msg}")
-    
+
     campaign_link = f"https://www.facebook.com/adsmanager/manage/campaigns?act={ad_account_id}&campaign_ids={campaign_id}"
-    
+
     return {
         "status": "success",
         "campaign_id": campaign_id,
