@@ -127,10 +127,14 @@ class CampaignRequest(BaseModel):
     max_salary: float = 0.0     # Salário máximo
     devices: List[str] = []     # Dispositivos (informados mas não utilizados no direcionamento)
 
-    # Novos campos para definir o tipo de mídia a ser utilizada:
-    carrossel: List[str] = []   # Várias imagens para carrossel (somente este campo preenchido se for carrossel)
-    image: str = ""             # Imagem única (para post estático)
-    video: str = ""             # Vídeo único (ou apresentação, se houver apenas este preenchido)
+    # Novos campos para mídia:
+    single_image: str = Field(default="", alias="Single Image")  # Imagem única
+    url1Carrossel: str = ""  # Primeira URL para carrossel
+    url2Carrossel: str = ""  # Segunda URL para carrossel
+    url3Carrossel: str = ""  # Terceira URL para carrossel
+    url4Carrossel: str = ""  # Quarta URL para carrossel
+    url5Carrossel: str = ""  # Quinta URL para carrossel
+    video: str = Field(default="", alias="Video")  # Vídeo
 
     @field_validator("objective", mode="before")
     def validate_objective(cls, v):
@@ -317,25 +321,26 @@ async def create_campaign(request: Request):
     default_link = data.content if data.content else "https://www.example.com"
     default_message = data.description
 
-    # Verifica qual dos campos de mídia está preenchido (apenas um deve ser)
-    if data.image:
-        # Caso de imagem única – post estático
+    # Nova lógica: Verifica qual campo de mídia está preenchido (priorizando vídeo > carrossel > imagem única)
+    if data.video:
+        # Caso de vídeo único – utiliza video_data
         creative_spec = {
-            "link_data": {
-                "message": default_message,
-                "link": default_link,
-                "picture": data.image
+            "video_data": {
+                "video_id": data.video,
+                "title": data.campaign_name,
+                "message": default_message
             }
         }
-    elif data.carrossel:
-        # Caso de carrossel – monta os child attachments
+    elif any([data.url1Carrossel, data.url2Carrossel, data.url3Carrossel, data.url4Carrossel, data.url5Carrossel]):
+        # Caso de carrossel – monta os child attachments com os campos separados
         child_attachments = []
-        for img in data.carrossel:
-            child_attachments.append({
-                "link": default_link,
-                "picture": img,
-                "message": default_message,
-            })
+        for url in [data.url1Carrossel, data.url2Carrossel, data.url3Carrossel, data.url4Carrossel, data.url5Carrossel]:
+            if url:
+                child_attachments.append({
+                    "link": default_link,
+                    "picture": url,
+                    "message": default_message,
+                })
         creative_spec = {
             "link_data": {
                 "child_attachments": child_attachments,
@@ -343,13 +348,13 @@ async def create_campaign(request: Request):
                 "link": default_link,
             }
         }
-    elif data.video:
-        # Caso de vídeo único – utiliza video_data
+    elif data.single_image:
+        # Caso de imagem única – post estático
         creative_spec = {
-            "video_data": {
-                "video_id": data.video,
-                "title": data.campaign_name,
-                "message": default_message
+            "link_data": {
+                "message": default_message,
+                "link": default_link,
+                "picture": data.single_image
             }
         }
     else:
