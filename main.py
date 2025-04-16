@@ -38,6 +38,10 @@ def extract_fb_error(resp: requests.Response) -> str:
         return "Erro processando resposta do Facebook"
 
 def get_page_info(user_token: str) -> Tuple[str,str]:
+    """
+    Retorna (page_id, page_access_token) e verifica perms no token
+    """
+    # 1) pega páginas
     url = f"https://graph.facebook.com/v16.0/me/accounts?access_token={user_token}"
     r = requests.get(url)
     if r.status_code != 200:
@@ -46,7 +50,22 @@ def get_page_info(user_token: str) -> Tuple[str,str]:
     if not data:
         raise HTTPException(status_code=533, detail="Nenhuma página disponível")
     page = data[0]
-    return page["id"], page["access_token"]
+    page_id = page["id"]
+    page_token = page["access_token"]
+
+    # 2) debug_token para listar scopes
+    app_token = os.getenv("FB_APP_TOKEN")  # seu {app_id}|{app_secret}
+    dbg = requests.get(
+        f"https://graph.facebook.com/debug_token",
+        params={"input_token": page_token, "access_token": app_token}
+    )
+    if dbg.status_code == 200:
+        scopes = dbg.json()["data"].get("scopes", [])
+        logging.info("Permissões no page_access_token: %s", scopes)
+    else:
+        logging.warning("Não foi possível debugar token de página: %s", dbg.text)
+
+    return page_id, page_token
 
 def check_account_balance(act_id: str, token: str, api_v: str, cap: int):
     url = f"https://graph.facebook.com/{api_v}/act_{act_id}?fields=spend_cap,amount_spent&access_token={token}"
@@ -95,7 +114,7 @@ class CampaignRequest(BaseModel):
         }
         return m.get(v, v)
 
-    @field_validator("budget", "min_salary", "max_salary", mode="before")
+    @field_validator("budget","min_salary","max_salary", mode="before")
     def parse_amounts(cls, v, info: ValidationInfo):
         defaults = {"budget": 0.0, "min_salary": 2000.0, "max_salary": 20000.0}
         if isinstance(v, str):
@@ -117,7 +136,7 @@ async def create_campaign(req: Request):
     acct = data.account_id
     user_token = data.token
 
-    # 1) Verifica saldo
+    # 1) Saldo
     cap = int(data.budget * 100)
     check_account_balance(acct, user_token, api_v, cap)
 
@@ -137,7 +156,7 @@ async def create_campaign(req: Request):
         raise HTTPException(status_code=400, detail=f"Erro ao criar campanha: {extract_fb_error(resp)}")
     camp_id = resp.json()["id"]
 
-    # 3) Datas & orçamento diário
+    # 3) Datas & daily budget
     try:
         sd = datetime.strptime(data.initial_date, "%m/%d/%Y")
         ed = datetime.strptime(data.final_date, "%m/%d/%Y")
@@ -166,11 +185,10 @@ async def create_campaign(req: Request):
         "publisher_platforms": PUBLISHER_PLATFORMS
     }
 
-    # 6) Upload de vídeo via multipart e tratamento de permissão
+    # 6) Upload vídeo multipart
     page_id, page_token = get_page_info(user_token)
     video_id = None
     if data.video.strip():
-        # baixa do Firebase
         fb_vid = requests.get(data.video.strip(), stream=True)
         if fb_vid.status_code != 200:
             logging.error("Falha ao baixar vídeo: %s", fb_vid.text[:200])
@@ -182,11 +200,10 @@ async def create_campaign(req: Request):
 
         if up.status_code != 200:
             err = extract_fb_error(up)
-            # se for falta de pages_read_engagement, devolve 403
             if "pages_read_engagement" in err:
                 raise HTTPException(
                     status_code=403,
-                    detail="Permissão `pages_read_engagement` faltando no token da página"
+                    detail="Token de página sem permissão `pages_read_engagement`"
                 )
             logging.error("Erro upload vídeo FB: %s", up.text)
             raise HTTPException(status_code=400, detail=f"Erro no upload do vídeo: {err}")
@@ -194,7 +211,7 @@ async def create_campaign(req: Request):
         video_id = up.json().get("id")
         logging.info("Vídeo carregado com ID %s", video_id)
 
-    # 7) Cria Ad Set
+    # 7) Cria AdSet
     adset = requests.post(
         f"https://graph.facebook.com/{api_v}/act_{acct}/adsets",
         json={
@@ -215,7 +232,7 @@ async def create_campaign(req: Request):
     adset.raise_for_status()
     adset_id = adset.json()["id"]
 
-    # 8) Prepara Ad Creative
+    # 8) AdCreative
     link = data.content.strip() or "https://www.adstock.ai"
     msg = data.description
     if video_id:
@@ -223,8 +240,7 @@ async def create_campaign(req: Request):
     elif data.image.strip():
         spec = {"link_data": {"message": msg, "link": link, "picture": data.image.strip()}}
     elif any(u.strip() for u in data.carrossel):
-        child = [{"link": link, "picture": u.strip(), "message": msg}
-                 for u in data.carrossel if u.strip()]
+        child = [{"link": link, "picture": u.strip(), "message": msg} for u in data.carrossel if u.strip()]
         spec = {"link_data": {"child_attachments": child, "message": msg, "link": link}}
     else:
         spec = {
@@ -246,7 +262,7 @@ async def create_campaign(req: Request):
     cre.raise_for_status()
     creative_id = cre.json()["id"]
 
-    # 9) Cria o Ad final
+    # 9) Cria Ad final
     ad = requests.post(
         f"https://graph.facebook.com/{api_v}/act_{acct}/ads",
         json={
