@@ -103,21 +103,24 @@ class CampaignRequest(BaseModel):
 
     @field_validator("budget", "min_salary", "max_salary", mode="before")
     def parse_amounts(cls, v, info: ValidationInfo):
-        # v pode ser string ou número; info.field_name indica qual campo
+        defaults = {
+            "budget": 0.0,
+            "min_salary": 2000.0,
+            "max_salary": 20000.0
+        }
+        # Se vier string vazia ou apenas espaços, retorna padrão
+        if isinstance(v, str) and not v.strip():
+            return defaults[info.field_name]
+        # Se string não vazia, tenta converter
         if isinstance(v, str):
             clean = v.replace("$", "").replace(" ", "").replace(",", ".")
-            if clean:
-                try:
-                    return float(clean)
-                except ValueError:
-                    raise ValueError(f"{info.field_name} inválido: {v}")
+            try:
+                return float(clean)
+            except ValueError:
+                raise ValueError(f"{info.field_name} inválido: {v}")
+        # Se for None, também aplica padrão
         if v is None:
-            if info.field_name == "min_salary":
-                return 2000.0
-            if info.field_name == "max_salary":
-                return 20000.0
-            if info.field_name == "budget":
-                return 0.0
+            return defaults[info.field_name]
         return v
 
 @app.post("/create_campaign")
@@ -152,7 +155,7 @@ async def create_campaign(request: Request):
         start_ts, end_ts = int(sd.timestamp()), int(ed.timestamp())
     except HTTPException:
         raise
-    except:
+    except Exception:
         daily, start_ts, end_ts = total_cents, data.initial_date, data.final_date
 
     # 4) define optimization goal
