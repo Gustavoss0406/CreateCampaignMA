@@ -142,7 +142,7 @@ class CampaignRequest(BaseModel):
     single_image: str = Field(default="", alias="Single Image")  # Campo antigo para imagem única (opcional)
     image: str = ""  # Novo campo para imagem estática; se preenchido, prevalece sobre carrossel
     carrossel: List[str] = []  # Lista de URLs para carrossel
-    video: str = Field(default="", alias="Video")    # Vídeo
+    video: str = Field(default="", alias="video")    # Vídeo
 
     @field_validator("objective", mode="before")
     def validate_objective(cls, v):
