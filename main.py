@@ -2,6 +2,7 @@ import logging
 import sys
 import os
 import requests
+import uvicorn
 from datetime import datetime, timedelta
 from fastapi import FastAPI, HTTPException, Request, status
 from fastapi.middleware.cors import CORSMiddleware
@@ -52,7 +53,7 @@ def check_account_balance(account_id: str, token: str, v: str, cap: int):
     if resp.status_code != 200:
         raise HTTPException(status_code=resp.status_code, detail="Erro ao verificar saldo")
     d = resp.json()
-    if int(d.get("spend_cap",0)) - int(d.get("amount_spent",0)) < cap:
+    if int(d.get("spend_cap", 0)) - int(d.get("amount_spent", 0)) < cap:
         raise HTTPException(status_code=402, detail="Fundos insuficientes")
 
 @app.exception_handler(RequestValidationError)
@@ -84,143 +85,205 @@ class CampaignRequest(BaseModel):
 
     @field_validator("objective", mode="before")
     def map_obj(cls, v):
-        m = {"Vendas":"OUTCOME_SALES","Promover site/app":"OUTCOME_TRAFFIC",
-             "Leads":"OUTCOME_LEADS","Alcance de marca":"OUTCOME_AWARENESS"}
+        m = {
+            "Vendas": "OUTCOME_SALES",
+            "Promover site/app": "OUTCOME_TRAFFIC",
+            "Leads": "OUTCOME_LEADS",
+            "Alcance de marca": "OUTCOME_AWARENESS"
+        }
         return m.get(v, v)
 
     @field_validator("budget", mode="before")
     def parse_budget(cls, v):
-        return float(str(v).replace("$","").replace(",",".")) if isinstance(v,str) else v
+        return float(str(v).replace("$", "").replace(",", ".")) if isinstance(v, str) else v
 
     @field_validator("min_salary", mode="before")
     def parse_min(cls, v):
-        if not v: return 2000.0
-        return float(str(v).replace("$","").replace(",","."))
+        if not v:
+            return 2000.0
+        return float(str(v).replace("$", "").replace(",", "."))
 
     @field_validator("max_salary", mode="before")
     def parse_max(cls, v):
-        if not v: return 20000.0
-        return float(str(v).replace("$","").replace(",","."))
+        if not v:
+            return 20000.0
+        return float(str(v).replace("$", "").replace(",", "."))
 
 @app.post("/create_campaign")
 async def create_campaign(request: Request):
     data = CampaignRequest(**(await request.json()))
     fb_v = "v16.0"
     acct = data.account_id
-    # 1) check saldo
+
+    # 1) Verifica saldo
     cap = int(data.budget * 100)
     check_account_balance(acct, data.token, fb_v, cap)
 
-    # 2) create campaign
+    # 2) Cria campanha
     camp = requests.post(
         f"https://graph.facebook.com/{fb_v}/act_{acct}/campaigns",
-        json={"name":data.campaign_name,"objective":data.objective,
-              "status":"ACTIVE","access_token":data.token,"special_ad_categories":[]}
+        json={
+            "name": data.campaign_name,
+            "objective": data.objective,
+            "status": "ACTIVE",
+            "access_token": data.token,
+            "special_ad_categories": []
+        }
     )
     camp.raise_for_status()
     cid = camp.json()["id"]
 
-    # 3) compute dates + daily budget
+    # 3) Calcula datas e orçamento diário
     sd = datetime.strptime(data.initial_date, "%m/%d/%Y")
     ed = datetime.strptime(data.final_date, "%m/%d/%Y")
-    days = max((ed - sd).days,1)
+    days = max((ed - sd).days, 1)
     daily = cap // days
     if daily < 576:
-        raise HTTPException(400,"O valor diário deve ser maior que $5.76")
-    ast = int(sd.timestamp()); aet = int(ed.timestamp())
+        raise HTTPException(status_code=400, detail="O valor diário deve ser maior que $5.76")
+    ast = int(sd.timestamp())
+    aet = int(ed.timestamp())
 
-    # 4) optimization goal
-    opt = "IMPRESSIONS" if data.objective=="OUTCOME_AWARENESS" else "LINK_CLICKS"
+    # 4) Determina optimization goal
+    opt = "IMPRESSIONS" if data.objective == "OUTCOME_AWARENESS" else "LINK_CLICKS"
 
-    # 5) gender targeting
-    g = []  
-    if data.target_sex.lower()=="male": g=[1]
-    if data.target_sex.lower()=="female": g=[2]
+    # 5) Segmentação por gênero
+    g = []
+    if data.target_sex.lower() == "male":
+        g = [1]
+    elif data.target_sex.lower() == "female":
+        g = [2]
 
-    # 6) video logic
+    # 6) Lógica de vídeo: orientação e placements
     vid = data.video.strip()
     plats = PUBLISHER_PLATFORMS.copy()
     pos = {}
     if vid:
         try:
-            m = requests.get(f"https://graph.facebook.com/{fb_v}/{vid}?fields=width,height&access_token={data.token}")
+            m = requests.get(
+                f"https://graph.facebook.com/{fb_v}/{vid}?fields=width,height&access_token={data.token}"
+            )
             m.raise_for_status()
-            w,h = map(int,(m.json().get("width",0),m.json().get("height",0)))
-            if h> w:
-                plats=["instagram"]; pos={"instagram_positions":["reels"]}
+            w, h = int(m.json().get("width", 0)), int(m.json().get("height", 0))
+            if h > w:
+                plats = ["instagram"]
+                pos = {"instagram_positions": ["reels"]}
             else:
-                plats=["facebook"]; pos={"facebook_positions":["feed"]}
+                plats = ["facebook"]
+                pos = {"facebook_positions": ["feed"]}
         except:
             pass
 
-    targeting = {"geo_locations":{"countries":GLOBAL_COUNTRIES},
-                 "genders":g,"age_min":data.target_age,"age_max":data.target_age,
-                 "publisher_platforms":plats, **pos}
+    targeting = {
+        "geo_locations": {"countries": GLOBAL_COUNTRIES},
+        "genders": g,
+        "age_min": data.target_age,
+        "age_max": data.target_age,
+        "publisher_platforms": plats,
+        **pos
+    }
 
-    # 7) create adset
+    # 7) Cria ad set
     aset = requests.post(
         f"https://graph.facebook.com/{fb_v}/act_{acct}/adsets",
-        json={"name":f"AdSet {data.campaign_name}","campaign_id":cid,
-              "daily_budget":daily,"billing_event":"IMPRESSIONS",
-              "optimization_goal":opt,"bid_amount":100,
-              "targeting":targeting,
-              "start_time":ast,"end_time":aet,
-              "dsa_beneficiary": get_page_id(data.token),
-              "dsa_payor": get_page_id(data.token),
-              "access_token":data.token}
+        json={
+            "name": f"AdSet {data.campaign_name}",
+            "campaign_id": cid,
+            "daily_budget": daily,
+            "billing_event": "IMPRESSIONS",
+            "optimization_goal": opt,
+            "bid_amount": 100,
+            "targeting": targeting,
+            "start_time": ast,
+            "end_time": aet,
+            "dsa_beneficiary": get_page_id(data.token),
+            "dsa_payor": get_page_id(data.token),
+            "access_token": data.token
+        }
     )
     aset.raise_for_status()
     aid = aset.json()["id"]
 
-    # 8) create ad creative (com try/except e rollback)
+    # 8) Cria ad creative (com rollback em caso de erro)
     default_link = data.content.strip() or "https://www.adstock.ai"
-    default_msg  = data.description or ""
+    default_msg = data.description or ""
     if vid:
-        creative_fields = {"video_data":{"video_id":vid,"title":data.campaign_name,"message":default_msg}}
+        creative_fields = {
+            "video_data": {
+                "video_id": vid,
+                "title": data.campaign_name,
+                "message": default_msg
+            }
+        }
     elif data.image.strip():
-        creative_fields = {"link_data":{"message":default_msg,"link":default_link,"picture":data.image.strip()}}
+        creative_fields = {
+            "link_data": {
+                "message": default_msg,
+                "link": default_link,
+                "picture": data.image.strip()
+            }
+        }
     elif any(u.strip() for u in data.carrossel):
-        ca = [{"link":default_link,"picture":u.strip(),"message":default_msg}
-              for u in data.carrossel if u.strip()]
-        creative_fields = {"link_data":{"child_attachments":ca,"message":default_msg,"link":default_link}}
+        ca = [
+            {"link": default_link, "picture": u.strip(), "message": default_msg}
+            for u in data.carrossel if u.strip()
+        ]
+        creative_fields = {
+            "link_data": {
+                "child_attachments": ca,
+                "message": default_msg,
+                "link": default_link
+            }
+        }
     else:
-        creative_fields = {"link_data":{"message":default_msg,"link":default_link,
-                                        "picture":"https://via.placeholder.com/1200x628.png?text=Ad+Placeholder"}}
+        creative_fields = {
+            "link_data": {
+                "message": default_msg,
+                "link": default_link,
+                "picture": "https://via.placeholder.com/1200x628.png?text=Ad+Placeholder"
+            }
+        }
 
     try:
         cr = requests.post(
             f"https://graph.facebook.com/{fb_v}/act_{acct}/adcreatives",
-            json={"name":f"Creative {data.campaign_name}",
-                  "object_story_spec":{"page_id":get_page_id(data.token), **creative_fields},
-                  "access_token":data.token}
+            json={
+                "name": f"Creative {data.campaign_name}",
+                "object_story_spec": {"page_id": get_page_id(data.token), **creative_fields},
+                "access_token": data.token
+            }
         )
         cr.raise_for_status()
         crid = cr.json()["id"]
     except requests.exceptions.HTTPError:
-        # rollback campanha
+        # rollback da campanha criada
         requests.delete(f"https://graph.facebook.com/{fb_v}/{cid}?access_token={data.token}")
         raise HTTPException(
             status_code=400,
             detail=f"Erro ao criar Ad Creative: {extract_fb_error(cr)}"
         )
 
-    # 9) create ad
+    # 9) Cria ad final
     ad = requests.post(
         f"https://graph.facebook.com/{fb_v}/act_{acct}/ads",
-        json={"name":f"Ad {data.campaign_name}","adset_id":aid,
-              "creative":{"creative_id":crid},"status":"ACTIVE","access_token":data.token}
+        json={
+            "name": f"Ad {data.campaign_name}",
+            "adset_id": aid,
+            "creative": {"creative_id": crid},
+            "status": "ACTIVE",
+            "access_token": data.token
+        }
     )
     ad.raise_for_status()
     adid = ad.json()["id"]
 
     return {
-        "status":"success",
-        "campaign_id":cid,
-        "ad_set_id":aid,
-        "creative_id":crid,
-        "ad_id":adid
+        "status": "success",
+        "campaign_id": cid,
+        "ad_set_id": aid,
+        "creative_id": crid,
+        "ad_id": adid
     }
 
 if __name__ == "__main__":
-    port = int(os.environ.get("PORT",8080))
+    port = int(os.environ.get("PORT", 8080))
     uvicorn.run(app, host="0.0.0.0", port=port)
