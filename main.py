@@ -116,23 +116,23 @@ async def create_campaign(req: Request):
     acct = data.account_id
     user_token = data.token
 
-    # 1) Saldo
-    cap = int(data.budget*100)
-    check_account_balance(acct,user_token,api_v,cap)
+    # 1) Verifica saldo
+    cap = int(data.budget * 100)
+    check_account_balance(acct, user_token, api_v, cap)
 
     # 2) Cria campanha
     try:
         r = requests.post(
             f"https://graph.facebook.com/{api_v}/act_{acct}/campaigns",
             json={
-                "name":data.campaign_name,
-                "objective":data.objective,
-                "status":"ACTIVE",
-                "special_ad_categories":[],
-                "access_token":user_token
+                "name": data.campaign_name,
+                "objective": data.objective,
+                "status": "ACTIVE",
+                "special_ad_categories": [],
+                "access_token": user_token
             }
         )
-        if r.status_code!=200:
+        if r.status_code != 200:
             raise HTTPException(status_code=400, detail=f"Erro criar campanha: {extract_fb_error(r)}")
         camp_id = r.json()["id"]
     except HTTPException:
@@ -142,115 +142,127 @@ async def create_campaign(req: Request):
 
     # 3) Datas e daily_budget
     try:
-        sd = datetime.strptime(data.initial_date,"%m/%d/%Y")
-        ed = datetime.strptime(data.final_date,"%m/%d/%Y")
-        days = max((ed-sd).days,1)
-        daily = cap//days
-        if daily<576: raise HTTPException(status_code=400,detail="Daily < $5.76")
-        if (ed-sd)<timedelta(hours=24): raise HTTPException(status_code=400,detail="Duração <24h")
-        start_ts,end_ts = int(sd.timestamp()),int(ed.timestamp())
+        sd = datetime.strptime(data.initial_date, "%m/%d/%Y")
+        ed = datetime.strptime(data.final_date, "%m/%d/%Y")
+        days = max((ed - sd).days, 1)
+        daily = cap // days
+        if daily < 576:
+            raise HTTPException(status_code=400, detail="Daily < $5.76")
+        if (ed - sd) < timedelta(hours=24):
+            raise HTTPException(status_code=400, detail="Duração <24h")
+        start_ts, end_ts = int(sd.timestamp()), int(ed.timestamp())
     except HTTPException:
         raise
     except:
-        daily,start_ts,end_ts = cap,data.initial_date,data.final_date
+        daily, start_ts, end_ts = cap, data.initial_date, data.final_date
 
     # 4) Optimization
-    opt = "IMPRESSIONS" if data.objective=="OUTCOME_AWARENESS" else "LINK_CLICKS"
+    opt = "IMPRESSIONS" if data.objective == "OUTCOME_AWARENESS" else "LINK_CLICKS"
 
     # 5) Targeting
-    genders=[] if data.target_sex.lower()=="all" else [1] if data.target_sex.lower()=="male" else [2]
-    targeting={"geo_locations":{"countries":GLOBAL_COUNTRIES},
-               "genders":genders,
-               "age_min":data.target_age,
-               "age_max":data.target_age,
-               "publisher_platforms":PUBLISHER_PLATFORMS}
+    genders = [] if data.target_sex.lower() == "all" else [1] if data.target_sex.lower() == "male" else [2]
+    targeting = {
+        "geo_locations": {"countries": GLOBAL_COUNTRIES},
+        "genders": genders,
+        "age_min": data.target_age,
+        "age_max": data.target_age,
+        "publisher_platforms": PUBLISHER_PLATFORMS
+    }
 
-    # 6) Page info e upload vídeo usando 'url' em vez de 'file_url'
-    page_id,page_token = get_page_info(user_token)
-    video_id=None
+    # 6) Upload de vídeo na Página via multipart
+    page_id, page_token = get_page_info(user_token)
+    video_id = None
     if data.video.strip():
-        up = requests.post(
-            f"https://graph.facebook.com/{api_v}/{page_id}/videos",
-            data={
-                "url": data.video.strip(),
-                "published": False,
-                "access_token": page_token
-            }
-        )
-        if up.status_code!=200:
-            raise HTTPException(status_code=400,detail=f"Erro upload vídeo: {extract_fb_error(up)}")
+        # primeiro baixa o vídeo do Firebase
+        vid_resp = requests.get(data.video.strip(), stream=True)
+        if vid_resp.status_code != 200:
+            raise HTTPException(status_code=400, detail="Não foi possível baixar o vídeo da URL informada")
+        # envia o binário diretamente
+        files = {
+            "source": ("upload.mp4", vid_resp.content, "video/mp4")
+        }
+        payload = {"published": False, "access_token": page_token}
+        up = requests.post(f"https://graph.facebook.com/{api_v}/{page_id}/videos", files=files, data=payload)
+        if up.status_code != 200:
+            raise HTTPException(status_code=400, detail=f"Erro upload vídeo: {extract_fb_error(up)}")
         video_id = up.json().get("id")
 
     # 7) Cria AdSet
     adset = requests.post(
         f"https://graph.facebook.com/{api_v}/act_{acct}/adsets",
         json={
-            "name":f"Ad Set {data.campaign_name}",
-            "campaign_id":camp_id,
-            "daily_budget":daily,
-            "billing_event":"IMPRESSIONS",
-            "optimization_goal":opt,
-            "bid_amount":100,
-            "targeting":targeting,
-            "start_time":start_ts,
-            "end_time":end_ts,
-            "dsa_beneficiary":page_id,
-            "dsa_payor":page_id,
-            "access_token":user_token
+            "name": f"Ad Set {data.campaign_name}",
+            "campaign_id": camp_id,
+            "daily_budget": daily,
+            "billing_event": "IMPRESSIONS",
+            "optimization_goal": opt,
+            "bid_amount": 100,
+            "targeting": targeting,
+            "start_time": start_ts,
+            "end_time": end_ts,
+            "dsa_beneficiary": page_id,
+            "dsa_payor": page_id,
+            "access_token": user_token
         }
     )
     adset.raise_for_status()
-    adset_id=adset.json()["id"]
+    adset_id = adset.json()["id"]
 
-    # 8) AdCreative
-    link=data.content.strip() or "https://www.adstock.ai"
-    msg=data.description
+    # 8) Prepara AdCreative
+    link = data.content.strip() or "https://www.adstock.ai"
+    msg = data.description
     if video_id:
-        spec={"video_data":{"video_id":video_id,"title":data.campaign_name,"message":msg}}
+        spec = {"video_data": {"video_id": video_id, "title": data.campaign_name, "message": msg}}
     elif data.image.strip():
-        spec={"link_data":{"message":msg,"link":link,"picture":data.image.strip()}}
+        spec = {"link_data": {"message": msg, "link": link, "picture": data.image.strip()}}
     elif any(u.strip() for u in data.carrossel):
-        child=[{"link":link,"picture":u.strip(),"message":msg} for u in data.carrossel if u.strip()]
-        spec={"link_data":{"child_attachments":child,"message":msg,"link":link}}
+        child = [{"link": link, "picture": u.strip(), "message": msg} for u in data.carrossel if u.strip()]
+        spec = {"link_data": {"child_attachments": child, "message": msg, "link": link}}
     else:
-        spec={"link_data":{"message":msg,"link":link,
-                           "picture":"https://via.placeholder.com/1200x628.png?text=Ad+Placeholder"}}
+        spec = {
+            "link_data": {
+                "message": msg,
+                "link": link,
+                "picture": "https://via.placeholder.com/1200x628.png?text=Ad+Placeholder"
+            }
+        }
 
     cre = requests.post(
         f"https://graph.facebook.com/{api_v}/act_{acct}/adcreatives",
         json={
-            "name":f"Creative {data.campaign_name}",
-            "object_story_spec":{"page_id":page_id,**spec},
-            "access_token":user_token
+            "name": f"Creative {data.campaign_name}",
+            "object_story_spec": {"page_id": page_id, **spec},
+            "access_token": user_token
         }
     )
     cre.raise_for_status()
-    creative_id=cre.json()["id"]
+    creative_id = cre.json()["id"]
 
-    # 9) Cria Ad
+    # 9) Cria o Ad final
     ad = requests.post(
         f"https://graph.facebook.com/{api_v}/act_{acct}/ads",
         json={
-            "name":f"Ad {data.campaign_name}",
-            "adset_id":adset_id,
-            "creative":{"creative_id":creative_id},
-            "status":"ACTIVE",
-            "access_token":user_token
+            "name": f"Ad {data.campaign_name}",
+            "adset_id": adset_id,
+            "creative": {"creative_id": creative_id},
+            "status": "ACTIVE",
+            "access_token": user_token
         }
     )
     ad.raise_for_status()
-    ad_id=ad.json()["id"]
+    ad_id = ad.json()["id"]
 
     return {
-        "status":"success",
-        "campaign_id":camp_id,
-        "ad_set_id":adset_id,
-        "creative_id":creative_id,
-        "ad_id":ad_id,
-        "campaign_link":f"https://www.facebook.com/adsmanager/manage/campaigns?act={acct}&campaign_ids={camp_id}"
+        "status": "success",
+        "campaign_id": camp_id,
+        "ad_set_id": adset_id,
+        "creative_id": creative_id,
+        "ad_id": ad_id,
+        "campaign_link": f"https://www.facebook.com/adsmanager/manage/campaigns?act={acct}&campaign_ids={camp_id}"
     }
 
-if __name__=="__main__":
+if __name__ == "__main__":
     import uvicorn
-    port=int(os.environ.get("PORT",8080))
-    uvicorn.run(app,host="0.0.0.0",port=port)
+
+    port = int(os.environ.get("PORT", 8080))
+    uvicorn.run(app, host="0.0.0.0", port=port)
