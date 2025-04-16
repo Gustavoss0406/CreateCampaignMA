@@ -165,17 +165,21 @@ async def create_campaign(req: Request):
                "age_max":data.target_age,
                "publisher_platforms":PUBLISHER_PLATFORMS}
 
-    # 6) Page info e upload vídeo
+    # 6) Page info e upload vídeo usando 'url' em vez de 'file_url'
     page_id,page_token = get_page_info(user_token)
     video_id=None
     if data.video.strip():
         up = requests.post(
             f"https://graph.facebook.com/{api_v}/{page_id}/videos",
-            data={"file_url":data.video.strip(),"published":False,"access_token":page_token}
+            data={
+                "url": data.video.strip(),
+                "published": False,
+                "access_token": page_token
+            }
         )
         if up.status_code!=200:
             raise HTTPException(status_code=400,detail=f"Erro upload vídeo: {extract_fb_error(up)}")
-        video_id=up.json().get("id")
+        video_id = up.json().get("id")
 
     # 7) Cria AdSet
     adset = requests.post(
@@ -214,9 +218,11 @@ async def create_campaign(req: Request):
 
     cre = requests.post(
         f"https://graph.facebook.com/{api_v}/act_{acct}/adcreatives",
-        json={"name":f"Creative {data.campaign_name}",
-              "object_story_spec":{"page_id":page_id,**spec},
-              "access_token":user_token}
+        json={
+            "name":f"Creative {data.campaign_name}",
+            "object_story_spec":{"page_id":page_id,**spec},
+            "access_token":user_token
+        }
     )
     cre.raise_for_status()
     creative_id=cre.json()["id"]
@@ -224,11 +230,13 @@ async def create_campaign(req: Request):
     # 9) Cria Ad
     ad = requests.post(
         f"https://graph.facebook.com/{api_v}/act_{acct}/ads",
-        json={"name":f"Ad {data.campaign_name}",
-              "adset_id":adset_id,
-              "creative":{"creative_id":creative_id},
-              "status":"ACTIVE",
-              "access_token":user_token}
+        json={
+            "name":f"Ad {data.campaign_name}",
+            "adset_id":adset_id,
+            "creative":{"creative_id":creative_id},
+            "status":"ACTIVE",
+            "access_token":user_token
+        }
     )
     ad.raise_for_status()
     ad_id=ad.json()["id"]
