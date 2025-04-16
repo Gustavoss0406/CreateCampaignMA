@@ -127,7 +127,7 @@ async def create_campaign(request: Request):
     total_cents = int(data.budget * 100)
     check_account_balance(acct, token, fb_api, total_cents)
 
-    # 2) Cria campanha com tratamento de erro customizado
+    # 2) Cria campanha com tratamento de erro customizado e special_ad_categories
     try:
         camp_resp = requests.post(
             f"https://graph.facebook.com/{fb_api}/act_{acct}/campaigns",
@@ -135,6 +135,7 @@ async def create_campaign(request: Request):
                 "name": data.campaign_name,
                 "objective": data.objective,
                 "status": "ACTIVE",
+                "special_ad_categories": [],       # <— adicionado aqui
                 "access_token": token
             }
         )
