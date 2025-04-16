@@ -86,20 +86,28 @@ class CampaignRequest(BaseModel):
     video: str = Field(default="", alias="video")
 
     @field_validator("objective", mode="before")
-    def map_objective(cls,v):
-        m = {"Vendas":"OUTCOME_SALES","Promover site/app":"OUTCOME_TRAFFIC",
-             "Leads":"OUTCOME_LEADS","Alcance de marca":"OUTCOME_AWARENESS"}
-        return m.get(v,v)
+    def map_objective(cls, v):
+        m = {
+            "Vendas": "OUTCOME_SALES",
+            "Promover site/app": "OUTCOME_TRAFFIC",
+            "Leads": "OUTCOME_LEADS",
+            "Alcance de marca": "OUTCOME_AWARENESS"
+        }
+        return m.get(v, v)
 
-    @field_validator("budget","min_salary","max_salary", mode="before")
-    def parse_amounts(cls,v,info: ValidationInfo):
-        defaults = {"budget":0.0,"min_salary":2000.0,"max_salary":20000.0}
-        if isinstance(v,str):
-            if not v.strip(): return defaults[info.field_name]
-            c=v.replace("$","").replace(" ", "").replace(",",".")
-            try: return float(c)
-            except: raise ValueError(f"{info.field_name} inválido: {v}")
-        if v is None: return defaults[info.field_name]
+    @field_validator("budget", "min_salary", "max_salary", mode="before")
+    def parse_amounts(cls, v, info: ValidationInfo):
+        defaults = {"budget": 0.0, "min_salary": 2000.0, "max_salary": 20000.0}
+        if isinstance(v, str):
+            if not v.strip():
+                return defaults[info.field_name]
+            c = v.replace("$","").replace(" ", "").replace(",",".")
+            try:
+                return float(c)
+            except:
+                raise ValueError(f"{info.field_name} inválido: {v}")
+        if v is None:
+            return defaults[info.field_name]
         return v
 
 @app.post("/create_campaign")
@@ -109,7 +117,7 @@ async def create_campaign(req: Request):
     acct = data.account_id
     user_token = data.token
 
-    # 1) Saldo
+    # 1) Verifica saldo
     cap = int(data.budget * 100)
     check_account_balance(acct, user_token, api_v, cap)
 
@@ -158,7 +166,7 @@ async def create_campaign(req: Request):
         "publisher_platforms": PUBLISHER_PLATFORMS
     }
 
-    # 6) Upload vídeo via multipart
+    # 6) Upload de vídeo via multipart e tratamento de permissão
     page_id, page_token = get_page_info(user_token)
     video_id = None
     if data.video.strip():
@@ -167,13 +175,22 @@ async def create_campaign(req: Request):
         if fb_vid.status_code != 200:
             logging.error("Falha ao baixar vídeo: %s", fb_vid.text[:200])
             raise HTTPException(status_code=400, detail="Não foi possível baixar o vídeo da URL informada")
-        # envia binário
+
         files = {"source": ("video.mp4", fb_vid.content, "video/mp4")}
         payload = {"published": False, "access_token": page_token}
         up = requests.post(f"https://graph.facebook.com/{api_v}/{page_id}/videos", files=files, data=payload)
+
         if up.status_code != 200:
+            err = extract_fb_error(up)
+            # se for falta de pages_read_engagement, devolve 403
+            if "pages_read_engagement" in err:
+                raise HTTPException(
+                    status_code=403,
+                    detail="Permissão `pages_read_engagement` faltando no token da página"
+                )
             logging.error("Erro upload vídeo FB: %s", up.text)
-            raise HTTPException(status_code=400, detail=f"Erro no upload do vídeo: {extract_fb_error(up)}")
+            raise HTTPException(status_code=400, detail=f"Erro no upload do vídeo: {err}")
+
         video_id = up.json().get("id")
         logging.info("Vídeo carregado com ID %s", video_id)
 
@@ -198,7 +215,7 @@ async def create_campaign(req: Request):
     adset.raise_for_status()
     adset_id = adset.json()["id"]
 
-    # 8) Prepara AdCreative
+    # 8) Prepara Ad Creative
     link = data.content.strip() or "https://www.adstock.ai"
     msg = data.description
     if video_id:
@@ -206,7 +223,8 @@ async def create_campaign(req: Request):
     elif data.image.strip():
         spec = {"link_data": {"message": msg, "link": link, "picture": data.image.strip()}}
     elif any(u.strip() for u in data.carrossel):
-        child = [{"link": link, "picture": u.strip(), "message": msg} for u in data.carrossel if u.strip()]
+        child = [{"link": link, "picture": u.strip(), "message": msg}
+                 for u in data.carrossel if u.strip()]
         spec = {"link_data": {"child_attachments": child, "message": msg, "link": link}}
     else:
         spec = {
@@ -228,7 +246,7 @@ async def create_campaign(req: Request):
     cre.raise_for_status()
     creative_id = cre.json()["id"]
 
-    # 9) Cria Ad final
+    # 9) Cria o Ad final
     ad = requests.post(
         f"https://graph.facebook.com/{api_v}/act_{acct}/ads",
         json={
