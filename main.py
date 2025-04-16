@@ -7,7 +7,7 @@ from fastapi import FastAPI, HTTPException, Request, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, ValidationInfo
 from typing import List
 
 # Configuração detalhada do logging
@@ -89,7 +89,7 @@ class CampaignRequest(BaseModel):
     single_image: str = Field(default="", alias="Single Image")
     image: str = ""
     carrossel: List[str] = []
-    video: str = Field(default="", alias="video")  # agora em minúsculo
+    video: str = Field(default="", alias="video")    # Vídeo (alias em minúsculo)
 
     @field_validator("objective", mode="before")
     def validate_objective(cls, v):
@@ -102,12 +102,22 @@ class CampaignRequest(BaseModel):
         return mapping.get(v, v)
 
     @field_validator("budget", "min_salary", "max_salary", mode="before")
-    def parse_amounts(cls, v, field):
+    def parse_amounts(cls, v, info: ValidationInfo):
+        # v pode ser string ou número; info.field_name indica qual campo
         if isinstance(v, str):
             clean = v.replace("$", "").replace(" ", "").replace(",", ".")
-            return float(clean) if clean else (2000.0 if field.name=="min_salary" else 20000.0 if field.name=="max_salary" else 0.0)
-        if v is None and field.name=="min_salary": return 2000.0
-        if v is None and field.name=="max_salary": return 20000.0
+            if clean:
+                try:
+                    return float(clean)
+                except ValueError:
+                    raise ValueError(f"{info.field_name} inválido: {v}")
+        if v is None:
+            if info.field_name == "min_salary":
+                return 2000.0
+            if info.field_name == "max_salary":
+                return 20000.0
+            if info.field_name == "budget":
+                return 0.0
         return v
 
 @app.post("/create_campaign")
@@ -146,10 +156,10 @@ async def create_campaign(request: Request):
         daily, start_ts, end_ts = total_cents, data.initial_date, data.final_date
 
     # 4) define optimization goal
-    opt = "IMPRESSIONS" if data.objective=="OUTCOME_AWARENESS" else "LINK_CLICKS"
+    opt = "IMPRESSIONS" if data.objective == "OUTCOME_AWARENESS" else "LINK_CLICKS"
 
     # 5) targeting
-    genders = [] if data.target_sex.lower()=="all" else [1] if data.target_sex.lower()=="male" else [2]
+    genders = [] if data.target_sex.lower() == "all" else [1] if data.target_sex.lower() == "male" else [2]
     spec = {
         "geo_locations": {"countries": GLOBAL_COUNTRIES},
         "genders": genders,
@@ -198,35 +208,32 @@ async def create_campaign(request: Request):
     elif data.image.strip():
         creative_spec = {"link_data": {"message": default_msg, "link": default_link, "picture": data.image.strip()}}
     elif any(u.strip() for u in data.carrossel):
-        child = [{"link": default_link, "picture": u.strip(), "message": default_msg}
-                 for u in data.carrossel if u.strip()]
+        child = [{"link": default_link, "picture": u.strip(), "message": default_msg} for u in data.carrossel if u.strip()]
         creative_spec = {"link_data": {"child_attachments": child, "message": default_msg, "link": default_link}}
     else:
-        creative_spec = {"link_data": {"message": default_msg, "link": default_link,
-                                       "picture": "https://via.placeholder.com/1200x628.png?text=Ad+Placeholder"}}
+        creative_spec = {
+            "link_data": {
+                "message": default_msg,
+                "link": default_link,
+                "picture": "https://via.placeholder.com/1200x628.png?text=Ad+Placeholder"
+            }
+        }
 
-    creative_payload = {
-        "name": f"Ad Creative for {data.campaign_name}",
-        "object_story_spec": {"page_id": page_id, **creative_spec},
-        "access_token": token
-    }
-    creative = requests.post(f"https://graph.facebook.com/{fb_api}/act_{acct}/adcreatives", json=creative_payload)
+    creative = requests.post(
+        f"https://graph.facebook.com/{fb_api}/act_{acct}/adcreatives",
+        json={"name": f"Ad Creative for {data.campaign_name}", "object_story_spec": {"page_id": page_id, **creative_spec}, "access_token": token}
+    )
     if creative.status_code != 200:
         err = extract_fb_error(creative)
-        # rollback campanha
         requests.delete(f"https://graph.facebook.com/{fb_api}/{camp_id}?access_token={token}")
         raise HTTPException(status_code=400, detail=f"Erro no Ad Creative: {err}")
     creative_id = creative.json()["id"]
 
     # 9) cria o Ad final
-    ad_payload = {
-        "name": f"Ad for {data.campaign_name}",
-        "adset_id": adset_id,
-        "creative": {"creative_id": creative_id},
-        "status": "ACTIVE",
-        "access_token": token
-    }
-    ad = requests.post(f"https://graph.facebook.com/{fb_api}/act_{acct}/ads", json=ad_payload)
+    ad = requests.post(
+        f"https://graph.facebook.com/{fb_api}/act_{acct}/ads",
+        json={"name": f"Ad for {data.campaign_name}", "adset_id": adset_id, "creative": {"creative_id": creative_id}, "status": "ACTIVE", "access_token": token}
+    )
     if ad.status_code != 200:
         err = extract_fb_error(ad)
         requests.delete(f"https://graph.facebook.com/{fb_api}/{camp_id}?access_token={token}")
