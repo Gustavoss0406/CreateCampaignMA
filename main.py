@@ -120,7 +120,7 @@ class CampaignRequest(BaseModel):
     single_image: str = Field(default="", alias="Single Image")
     image: str = ""
     carrossel: List[str] = []
-    video: str = Field(default="", alias="Video")
+    video: str = ""  # agora aceita 'video' em lowercase
 
     @field_validator("objective", mode="before")
     def validate_objective(cls, v):
@@ -165,12 +165,11 @@ async def create_campaign(request: Request):
     fb_api_version = "v16.0"
     ad_account_id = data.account_id
 
-    # Converte o orçamento total para centavos
+    # Converte o orçamento total para centavos e verifica saldo
     total_budget_cents = int(data.budget * 100)
-    # Verifica o saldo da conta
     check_account_balance(ad_account_id, data.token, fb_api_version, total_budget_cents)
 
-    # Criação da campanha
+    # --- Criação da Campanha ---
     campaign_payload = {
         "name": data.campaign_name,
         "objective": data.objective,
@@ -185,7 +184,7 @@ async def create_campaign(request: Request):
     campaign_response.raise_for_status()
     campaign_id = campaign_response.json().get("id")
 
-    # Cálculo de datas e orçamento diário
+    # --- Cálculo de datas e orçamento diário ---
     try:
         start_dt = datetime.strptime(data.initial_date, "%m/%d/%Y")
         end_dt = datetime.strptime(data.final_date, "%m/%d/%Y")
@@ -204,7 +203,7 @@ async def create_campaign(request: Request):
         ad_set_end = data.final_date
         daily_budget = total_budget_cents
 
-    # Determina meta de otimização
+    # --- Determinação de optimization goal ---
     if data.objective == "OUTCOME_AWARENESS":
         optimization_goal = "IMPRESSIONS"
     elif data.objective in ["OUTCOME_TRAFFIC", "OUTCOME_LEADS", "OUTCOME_SALES"]:
@@ -212,7 +211,7 @@ async def create_campaign(request: Request):
     else:
         optimization_goal = "REACH"
 
-    # Gênero
+    # --- Segmentação por gênero ---
     if data.target_sex.lower() == "male":
         genders = [1]
     elif data.target_sex.lower() == "female":
@@ -220,7 +219,7 @@ async def create_campaign(request: Request):
     else:
         genders = []
 
-    # --- NOVA LÓGICA DE VIDEO: ORIENTAÇÃO E PLACEMENTS ---
+    # --- Lógica de vídeo: detecção de orientação e placements ---
     video_id = data.video.strip()
     platforms = PUBLISHER_PLATFORMS.copy()
     specific_positions = {}
@@ -236,19 +235,16 @@ async def create_campaign(request: Request):
             h = int(info.get("height", 0))
             logging.info(f"Detected video resolution: {w}x{h}")
             if h > w:
-                # vertical → Reels
                 platforms = ["instagram"]
                 specific_positions = {"instagram_positions": ["reels"]}
                 logging.info("Vertical video detectado: usando Instagram Reels")
             else:
-                # horizontal → Feed video
                 platforms = ["facebook"]
                 specific_positions = {"facebook_positions": ["feed"]}
                 logging.info("Horizontal video detectado: usando Facebook Feed")
         except Exception as e:
             logging.warning(f"Não foi possível obter metadados do vídeo: {e}")
 
-    # Monta o targeting_spec com possível override
     targeting_spec = {
         "geo_locations": {"countries": GLOBAL_COUNTRIES},
         "genders": genders,
@@ -259,10 +255,9 @@ async def create_campaign(request: Request):
     targeting_spec.update(specific_positions)
     logging.debug(f"Targeting spec: {targeting_spec}")
 
-    # Obtém page_id para DSA
     page_id = get_page_id(data.token)
 
-    # Criação do Ad Set
+    # --- Criação do Ad Set ---
     ad_set_payload = {
         "name": f"Ad Set for {data.campaign_name}",
         "campaign_id": campaign_id,
@@ -288,10 +283,6 @@ async def create_campaign(request: Request):
     default_link = data.content.strip() or "https://www.adstock.ai"
     default_message = data.description or ""
 
-    def is_valid_image_url(url: str) -> bool:
-        return url.lower().endswith((".jpg", ".jpeg", ".png"))
-
-    # Seleção da mídia
     if video_id:
         creative_spec = {
             "video_data": {
@@ -345,7 +336,7 @@ async def create_campaign(request: Request):
     ad_creative_response.raise_for_status()
     creative_id = ad_creative_response.json().get("id")
 
-    # Criação do Ad final
+    # --- Criação do Ad final ---
     ad_payload = {
         "name": f"Ad for {data.campaign_name}",
         "adset_id": ad_set_id,
