@@ -127,7 +127,7 @@ async def create_campaign(request: Request):
     total_cents = int(data.budget * 100)
     check_account_balance(acct, token, fb_api, total_cents)
 
-    # 2) Cria campanha
+    # 2) Cria campanha com tratamento de erro customizado
     try:
         camp_resp = requests.post(
             f"https://graph.facebook.com/{fb_api}/act_{acct}/campaigns",
@@ -138,11 +138,14 @@ async def create_campaign(request: Request):
                 "access_token": token
             }
         )
-        camp_resp.raise_for_status()
+        if camp_resp.status_code != 200:
+            err = extract_fb_error(camp_resp)
+            logging.error(f"Erro criando campanha: {camp_resp.text}")
+            raise HTTPException(status_code=400, detail=f"Erro ao criar campanha: {err}")
         camp_id = camp_resp.json().get("id")
-    except requests.exceptions.HTTPError:
-        err = extract_fb_error(camp_resp)
-        raise HTTPException(status_code=400, detail=f"Erro ao criar campanha: {err}")
+    except requests.exceptions.RequestException:
+        logging.exception("Falha ao chamar API do Facebook para criar campanha")
+        raise HTTPException(status_code=500, detail="Erro interno ao criar campanha")
 
     # 3) Datas e orçamento diário
     try:
@@ -277,7 +280,6 @@ async def create_campaign(request: Request):
         creative_id = creative_resp.json().get("id")
     except requests.exceptions.HTTPError:
         err = extract_fb_error(creative_resp)
-        # rollback campanha se falhar no creative
         requests.delete(f"https://graph.facebook.com/{fb_api}/{camp_id}?access_token={token}")
         raise HTTPException(status_code=400, detail=f"Erro no Ad Creative: {err}")
 
