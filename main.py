@@ -12,7 +12,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field, field_validator
 from typing import List, Optional
 
-# ─── Configuração de logging ───────────────────────────────────────────────────
+# ─── Logging ───────────────────────────────────────────────────────────────────
 logging.basicConfig(
     level=logging.DEBUG,
     stream=sys.stdout,
@@ -39,21 +39,19 @@ OBJECTIVE_TO_OPT_GOAL = {
     "OUTCOME_AWARENESS": "IMPRESSIONS",
     "OUTCOME_TRAFFIC":   "LINK_CLICKS",
     "OUTCOME_LEADS":     "LEAD_GENERATION",
-    "OUTCOME_SALES":     "OFFSITE_CONVERSIONS",
+    # OUTCOME_SALES no longer used
 }
 
 OBJECTIVE_TO_BILLING_EVENT = {
     "OUTCOME_AWARENESS": "IMPRESSIONS",
     "OUTCOME_TRAFFIC":   "LINK_CLICKS",
     "OUTCOME_LEADS":     "IMPRESSIONS",
-    "OUTCOME_SALES":     "IMPRESSIONS",
 }
 
 CTA_MAP = {
     "OUTCOME_AWARENESS": {"type": "LEARN_MORE", "value": {"link": ""}},
     "OUTCOME_TRAFFIC":   {"type": "LEARN_MORE", "value": {"link": ""}},
     "OUTCOME_LEADS":     {"type": "SIGN_UP",    "value": {"link": ""}},
-    "OUTCOME_SALES":     {"type": "SHOP_NOW",   "value": {"link": ""}},
 }
 
 # ─── Helpers ────────────────────────────────────────────────────────────────────
@@ -140,12 +138,11 @@ class CampaignRequest(BaseModel):
     image: str = ""
     carrossel: List[str] = []
     video: str = Field(default="", alias="video")
-    pixel_id: Optional[str] = None
 
     @field_validator("objective", mode="before")
     def map_objective(cls, v):
         m = {
-            "Vendas":            "OUTCOME_SALES",
+            "Vendas":            "OUTCOME_TRAFFIC",    # agora mapeia Vendas para tráfego
             "Promover site/app": "OUTCOME_TRAFFIC",
             "Leads":             "OUTCOME_LEADS",
             "Alcance de marca":  "OUTCOME_AWARENESS",
@@ -173,7 +170,7 @@ async def create_campaign(req: Request):
     logger.debug(f"Request body: {json.dumps(body)}")
     data = CampaignRequest(**body)
 
-    # validação de campos obrigatórios
+    # Checagens iniciais
     if not data.campaign_name:
         logger.error("campaign_name está vazio")
     if data.budget <= 0:
@@ -182,8 +179,6 @@ async def create_campaign(req: Request):
         logger.error("initial_date ou final_date vazio")
     if not (data.video or data.image or any(data.carrossel)):
         logger.warning("Sem mídia: video, image e carrossel estão vazios — será usado placeholder")
-
-    logger.info(f"Iniciando campanha: {data.campaign_name}")
 
     # 1) Verifica saldo
     total_cents = int(data.budget * 100)
@@ -219,7 +214,7 @@ async def create_campaign(req: Request):
         rollback_campaign(campaign_id, data.token)
         raise HTTPException(status_code=400, detail="Orçamento diário deve ser ≥ $5.76")
 
-    # ajusta horários para garantir ≥24h de duração
+    # ajusta duração para ≥24h
     start_ts = int(start_dt.timestamp())
     end_ts   = int(end_dt.timestamp())
     if end_ts - start_ts < 86400:
@@ -239,10 +234,10 @@ async def create_campaign(req: Request):
         "optimization_goal":  opt_goal,
         "bid_amount":         100,
         "targeting": {
-            "geo_locations": {"countries": GLOBAL_COUNTRIES},
-            "genders":       genders,
-            "age_min":       data.target_age,
-            "age_max":       data.target_age,
+            "geo_locations":    {"countries": GLOBAL_COUNTRIES},
+            "genders":          genders,
+            "age_min":          data.target_age,
+            "age_max":          data.target_age,
             "publisher_platforms": PUBLISHER_PLATFORMS
         },
         "start_time":         start_ts,
@@ -251,15 +246,6 @@ async def create_campaign(req: Request):
     }
     if data.objective == "OUTCOME_LEADS":
         adset_payload["promoted_object"] = {"page_id": page_id}
-    elif data.objective == "OUTCOME_SALES":
-        if not data.pixel_id:
-            logger.error("pixel_id ausente para OUTCOME_SALES")
-            rollback_campaign(campaign_id, data.token)
-            raise HTTPException(status_code=400, detail="pixel_id obrigatório para vendas")
-        adset_payload["promoted_object"] = {
-            "pixel_id":         data.pixel_id,
-            "custom_event_type":"PURCHASE"
-        }
 
     logger.debug(f"Payload AdSet: {json.dumps(adset_payload)}")
     resp_adset = requests.post(
@@ -362,8 +348,10 @@ async def create_campaign(req: Request):
         "ad_set_id":     adset_id,
         "creative_id":   creative_id,
         "ad_id":         ad_id,
-        "campaign_link": f"https://www.facebook.com/adsmanager/manage/campaigns"
-                         f"?act={data.account_id}&campaign_ids={campaign_id}"
+        "campaign_link": (
+            "https://www.facebook.com/adsmanager/manage/campaigns"
+            f"?act={data.account_id}&campaign_ids={campaign_id}"
+        )
     }
 
 if __name__ == "__main__":
