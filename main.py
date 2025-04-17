@@ -4,7 +4,7 @@ import os
 import time
 import json
 import requests
-from datetime import datetime, timedelta
+from datetime import datetime
 from fastapi import FastAPI, HTTPException, Request, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.exceptions import RequestValidationError
@@ -33,30 +33,31 @@ app.add_middleware(
 # ─── Constantes ─────────────────────────────────────────────────────────────────
 FB_API_VERSION      = "v16.0"
 GLOBAL_COUNTRIES    = ["US","CA","GB","DE","FR","BR","IN","MX","IT","ES","NL","SE","NO","DK","FI","CH","JP","KR"]
+# vamos rescrever o mapping de plataformas quando for Instagram-only
 PUBLISHER_PLATFORMS = ["facebook","instagram","audience_network","messenger"]
 
 OBJECTIVE_TO_OPT_GOAL = {
-    "OUTCOME_AWARENESS":   "IMPRESSIONS",
-    "OUTCOME_TRAFFIC":     "LINK_CLICKS",
-    "OUTCOME_LEADS":       "LEAD_GENERATION",
-    "OUTCOME_SALES":       "OFFSITE_CONVERSIONS",
-    "OUTCOME_ENGAGEMENT":  "PAGE_LIKES",       # para curtir página via engajamento&#8203;:contentReference[oaicite:0]{index=0}
+    "OUTCOME_AWARENESS":  "IMPRESSIONS",
+    "OUTCOME_TRAFFIC":    "LINK_CLICKS",
+    "OUTCOME_LEADS":      "LEAD_GENERATION",
+    "OUTCOME_SALES":      "OFFSITE_CONVERSIONS",
+    "OUTCOME_ENGAGEMENT": "PAGE_LIKES",
 }
 
 OBJECTIVE_TO_BILLING_EVENT = {
-    "OUTCOME_AWARENESS":   "IMPRESSIONS",
-    "OUTCOME_TRAFFIC":     "LINK_CLICKS",
-    "OUTCOME_LEADS":       "IMPRESSIONS",
-    "OUTCOME_SALES":       "IMPRESSIONS",
-    "OUTCOME_ENGAGEMENT":  "PAGE_LIKES",       # cobra por like de página
+    "OUTCOME_AWARENESS":  "IMPRESSIONS",
+    "OUTCOME_TRAFFIC":    "LINK_CLICKS",
+    "OUTCOME_LEADS":      "IMPRESSIONS",
+    "OUTCOME_SALES":      "IMPRESSIONS",
+    "OUTCOME_ENGAGEMENT": "IMPRESSIONS",
 }
 
 CTA_MAP = {
-    "OUTCOME_AWARENESS":   {"type": "LEARN_MORE", "value": {"link": ""}},
-    "OUTCOME_TRAFFIC":     {"type": "LEARN_MORE", "value": {"link": ""}},
-    "OUTCOME_LEADS":       {"type": "SIGN_UP",    "value": {"link": ""}},
-    "OUTCOME_SALES":       {"type": "SHOP_NOW",   "value": {"link": ""}},
-    "OUTCOME_ENGAGEMENT":  {"type": "LIKE_PAGE",  "value": {"page": ""}},
+    "OUTCOME_AWARENESS":  {"type":"LEARN_MORE","value":{"link":""}},
+    "OUTCOME_TRAFFIC":    {"type":"LEARN_MORE","value":{"link":""}},
+    "OUTCOME_LEADS":      {"type":"SIGN_UP","value":{"link":""}},
+    "OUTCOME_SALES":      {"type":"SHOP_NOW","value":{"link":""}},
+    "OUTCOME_ENGAGEMENT": {"type":"LIKE_PAGE","value":{"page":""}},
 }
 
 # ─── Helpers ────────────────────────────────────────────────────────────────────
@@ -110,13 +111,13 @@ def get_page_id(token: str) -> str:
 
 def check_account_balance(account_id: str, token: str, required_cents: int):
     url = f"https://graph.facebook.com/{FB_API_VERSION}/act_{account_id}"
-    params = {"fields": "spend_cap,amount_spent", "access_token": token}
+    params = {"fields":"spend_cap,amount_spent","access_token":token}
     logger.debug(f"Balance check params: {json.dumps(params)}")
     resp = requests.get(url, params=params)
     logger.debug(f"Balance status {resp.status_code}: {resp.text}")
     js = resp.json()
-    cap   = int(js.get("spend_cap", 0))
-    spent = int(js.get("amount_spent", 0))
+    cap   = int(js.get("spend_cap",0))
+    spent = int(js.get("amount_spent",0))
     logger.debug(f"cap={cap}, spent={spent}, required={required_cents}")
     if cap - spent < required_cents:
         raise HTTPException(status_code=402, detail="Fundos insuficientes")
@@ -127,13 +128,13 @@ class CampaignRequest(BaseModel):
     token: str
     campaign_name: str = ""
     objective: str = "OUTCOME_TRAFFIC"
-    content: str = ""
+    content: str = ""       # aqui passaremos o link do perfil IG (ex: https://instagram.com/seuperfil)
     description: str = ""
     keywords: str = ""
     budget: float = 0.0
-    initial_date: str = ""   # "MM/DD/YYYY"
-    final_date: str = ""     # "MM/DD/YYYY"
-    target_sex: str = ""     # "male" / "female" / ""
+    initial_date: str = ""  # "MM/DD/YYYY"
+    final_date: str = ""    # "MM/DD/YYYY"
+    target_sex: str = ""    # "male"/"female"/""
     target_age: int = 0
     image: str = ""
     carrossel: List[str] = []
@@ -146,35 +147,37 @@ class CampaignRequest(BaseModel):
             "Vendas":            "OUTCOME_SALES",
             "Promover site/app": "OUTCOME_TRAFFIC",
             "Leads":             "OUTCOME_LEADS",
-            "Alcance de marca":  "OUTCOME_ENGAGEMENT",  # agora vira ENGAGEMENT
-            "Seguidores":        "OUTCOME_ENGAGEMENT",
+            "Alcance de marca":  "OUTCOME_TRAFFIC",  # tráfego para Instagram
+            "Seguidores":        "OUTCOME_TRAFFIC",
         }
         return m.get(v, v)
 
     @field_validator("budget", mode="before")
     def parse_budget(cls, v):
         if isinstance(v, str):
-            return float(v.replace("$", "").replace(",", "."))
+            return float(v.replace("$","").replace(",",".")) 
         return v
 
 @app.exception_handler(RequestValidationError)
 async def validation_error(request: Request, exc: RequestValidationError):
-    msg = exc.errors()[0].get("msg", "Erro de validação")
+    msg = exc.errors()[0].get("msg","Erro de validação")
     logger.error(f"Validation error: {msg}")
     return JSONResponse(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, content={"detail": msg})
 
 # ─── Endpoint ──────────────────────────────────────────────────────────────────
 @app.post("/create_campaign")
 async def create_campaign(req: Request):
-    data = CampaignRequest(**await req.json())
-    logger.info(f"Iniciando campanha: {data.campaign_name}")
+    # --- capturar objetivo original pra override de Instagram ---
+    raw = await req.json()
+    orig_obj = raw.get("objective", "")
+    data = CampaignRequest(**raw)
 
-    # 1) Saldo
+    logger.info(f"Iniciando campanha: {data.campaign_name} (orig: {orig_obj})")
     total_cents = int(data.budget * 100)
     logger.debug(f"Total budget in cents: {total_cents}")
     check_account_balance(data.account_id, data.token, total_cents)
 
-    # 2) Criar campanha
+    # --- 1) criar Campaign ---
     camp_payload = {
         "name":                  data.campaign_name,
         "objective":             data.objective,
@@ -193,27 +196,25 @@ async def create_campaign(req: Request):
     campaign_id = camp_resp.json()["id"]
     logger.info(f"Campaign ID: {campaign_id}")
 
-    # 3) Datas e daily budget
-    start_dt  = datetime.strptime(data.initial_date, "%m/%d/%Y")
-    end_dt    = datetime.strptime(data.final_date,   "%m/%d/%Y")
-    days_diff = (end_dt - start_dt).days
-    days      = max(days_diff, 1)
-    daily     = total_cents // days
-    logger.debug(f"Dias={days_diff}, daily budget={daily} cents")
+    # --- 2) datas & daily budget ---
+    start_dt   = datetime.strptime(data.initial_date, "%m/%d/%Y")
+    end_dt     = datetime.strptime(data.final_date,   "%m/%d/%Y")
+    days       = max((end_dt - start_dt).days, 1)
+    daily      = total_cents // days
+    logger.debug(f"Dias={days}, daily budget={daily} cents")
     if daily < 576:
         rollback_campaign(campaign_id, data.token)
         raise HTTPException(status_code=400, detail="Orçamento diário deve ser ≥ $5.76")
+    now_ts     = int(time.time())
+    start_ts   = max(int(start_dt.timestamp()), now_ts + 60)
+    end_ts     = start_ts + days * 86400
 
-    now_ts   = int(time.time())
-    start_ts = max(int(start_dt.timestamp()), now_ts + 60)
-    end_ts   = start_ts + days * 86400
-
+    # --- 3) montar AdSet ---
     opt_goal      = OBJECTIVE_TO_OPT_GOAL[data.objective]
     billing_event = OBJECTIVE_TO_BILLING_EVENT[data.objective]
-    genders       = {"male":[1], "female":[2]}.get(data.target_sex.lower(), [])
+    genders       = {"male":[1],"female":[2]}.get(data.target_sex.lower(),[])
     page_id       = get_page_id(data.token)
 
-    # 4) Criar Ad Set
     adset_payload = {
         "name":              f"AdSet {data.campaign_name}",
         "campaign_id":       campaign_id,
@@ -221,18 +222,25 @@ async def create_campaign(req: Request):
         "billing_event":     billing_event,
         "optimization_goal": opt_goal,
         "bid_amount":        100,
+        "start_time":        start_ts,
+        "end_time":          end_ts,
+        "access_token":      data.token,
         "targeting": {
             "geo_locations":       {"countries": GLOBAL_COUNTRIES},
             "genders":             genders,
             "age_min":             data.target_age,
             "age_max":             data.target_age,
-            "publisher_platforms": PUBLISHER_PLATFORMS
-        },
-        "start_time":        start_ts,
-        "end_time":          end_ts,
-        "access_token":      data.token
+            "publisher_platforms": PUBLISHER_PLATFORMS,
+        }
     }
-    logger.debug(f"AdSet payload: {json.dumps(adset_payload, indent=2)}")
+
+    # --- override para 'Alcance de marca' → seguidores IG ---
+    if orig_obj in ["Alcance de marca","Seguidores"]:
+        logger.info("Override para Instagram-only placements e tráfego ao perfil")
+        adset_payload["targeting"]["publisher_platforms"] = ["instagram"]
+        # OBS: validações de billing_event/opt_goal mantêm LINK_CLICKS
+
+    logger.debug(f"AdSet payload: {json.dumps(adset_payload,indent=2)}")
     resp_adset = requests.post(
         f"https://graph.facebook.com/{FB_API_VERSION}/act_{data.account_id}/adsets",
         json=adset_payload
@@ -244,7 +252,7 @@ async def create_campaign(req: Request):
     adset_id = resp_adset.json()["id"]
     logger.info(f"AdSet ID: {adset_id}")
 
-    # 5) Vídeo + thumb
+    # --- 4) upload vídeo se houver + montagem creative_spec ---
     video_id  = None
     thumbnail = None
     if data.video.strip():
@@ -255,40 +263,36 @@ async def create_campaign(req: Request):
             rollback_campaign(campaign_id, data.token)
             raise HTTPException(status_code=400, detail=str(e))
 
-    # 6) Creative Spec
-    default_link    = data.content or "https://www.adstock.ai"
+    default_link    = data.content or "https://instagram.com/seuperfil"
     default_message = data.description
+    cta             = CTA_MAP[data.objective].copy()
+    cta["value"]["link"] = default_link
 
-    if data.objective == "OUTCOME_ENGAGEMENT":
-        # engajamento → curtir página
-        cta = CTA_MAP["OUTCOME_ENGAGEMENT"].copy()
-        cta["value"]["page"] = page_id
-        if video_id:
-            creative_spec = {
-                "video_data": {
-                    "video_id":       video_id,
-                    "message":        default_message,
-                    "image_url":      thumbnail,
-                    "call_to_action": cta
-                }
+    if video_id:
+        creative_spec = {
+            "video_data": {
+                "video_id":       video_id,
+                "message":        default_message,
+                "image_url":      thumbnail,
+                "call_to_action": cta
             }
-        else:
-            creative_spec = {
-                "link_data": {
-                    "message":        default_message,
-                    "link":           default_link,
-                    "picture":        data.image.strip() or "https://via.placeholder.com/1200x628.png?text=Ad",
-                    "call_to_action": cta
-                }
+        }
+    else:
+        creative_spec = {
+            "link_data": {
+                "message":        default_message,
+                "link":           default_link,
+                "picture":        data.image.strip() or "https://via.placeholder.com/1200x628",
+                "call_to_action": cta
             }
-    # ... (mantém lógica anterior para outros objetivos) ...
+        }
 
     creative_payload = {
-        "name":               f"Creative {data.campaign_name}",
-        "object_story_spec":  {"page_id": page_id, **creative_spec},
-        "access_token":       data.token
+        "name":              f"Creative {data.campaign_name}",
+        "object_story_spec": {"page_id": page_id, **creative_spec},
+        "access_token":      data.token
     }
-    logger.debug(f"Creative payload: {json.dumps(creative_payload, indent=2)}")
+    logger.debug(f"Creative payload: {json.dumps(creative_payload,indent=2)}")
     creative_resp = requests.post(
         f"https://graph.facebook.com/{FB_API_VERSION}/act_{data.account_id}/adcreatives",
         json=creative_payload
@@ -300,7 +304,7 @@ async def create_campaign(req: Request):
     creative_id = creative_resp.json()["id"]
     logger.info(f"Creative ID: {creative_id}")
 
-    # 7) Cria Ad
+    # --- 5) criar o Ad final ---
     ad_payload = {
         "name":         f"Ad {data.campaign_name}",
         "adset_id":     adset_id,
@@ -331,4 +335,4 @@ async def create_campaign(req: Request):
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=int(os.getenv("PORT", 8080)))
+    uvicorn.run(app, host="0.0.0.0", port=int(os.getenv("PORT",8080)))
