@@ -48,7 +48,6 @@ OBJECTIVE_TO_BILLING_EVENT = {
     "OUTCOME_TRAFFIC":    "LINK_CLICKS",
     "OUTCOME_LEADS":      "IMPRESSIONS",
     "OUTCOME_SALES":      "IMPRESSIONS",
-    # Engagement/pay-per-like só em contas maduras, aqui padrão IMPRESSIONS
     "OUTCOME_ENGAGEMENT": "IMPRESSIONS",
 }
 
@@ -167,7 +166,6 @@ async def validation_error(request: Request, exc: RequestValidationError):
 # ─── Endpoint ──────────────────────────────────────────────────────────────────
 @app.post("/create_campaign")
 async def create_campaign(req: Request):
-    # pega o objetivo literal para saber se é override Instagram
     raw = await req.json()
     orig_obj = raw.get("objective", "")
     data = CampaignRequest(**raw)
@@ -177,7 +175,7 @@ async def create_campaign(req: Request):
     logger.debug(f"Total budget in cents: {total_cents}")
     check_account_balance(data.account_id, data.token, total_cents)
 
-    # 1) criar Campaign
+    # 1) Criar campanha
     camp_payload = {
         "name":                  data.campaign_name,
         "objective":             data.objective,
@@ -196,7 +194,7 @@ async def create_campaign(req: Request):
     campaign_id = camp_resp.json()["id"]
     logger.info(f"Campaign ID: {campaign_id}")
 
-    # 2) cálculo de datas e orçamento diário
+    # 2) Datas & orçamento
     start_dt  = datetime.strptime(data.initial_date, "%m/%d/%Y")
     end_dt    = datetime.strptime(data.final_date,   "%m/%d/%Y")
     days      = max((end_dt - start_dt).days, 1)
@@ -209,7 +207,7 @@ async def create_campaign(req: Request):
     start_ts = max(int(start_dt.timestamp()), now_ts + 60)
     end_ts   = start_ts + days * 86400
 
-    # 3) montar AdSet
+    # 3) Criar AdSet
     opt_goal      = OBJECTIVE_TO_OPT_GOAL[data.objective]
     billing_event = OBJECTIVE_TO_BILLING_EVENT[data.objective]
     genders       = {"male":[1],"female":[2]}.get(data.target_sex.lower(),[])
@@ -234,19 +232,16 @@ async def create_campaign(req: Request):
         }
     }
 
-    # override para “Alcance de marca” → tráfego ao perfil IG
     if orig_obj in ["Alcance de marca","Seguidores"]:
         logger.info("Override Instagram-only")
         adset_payload["targeting"]["publisher_platforms"] = ["instagram"]
 
-    # primeiro POST AdSet
     logger.debug(f"AdSet payload: {json.dumps(adset_payload,indent=2)}")
     resp_adset = requests.post(
         f"https://graph.facebook.com/{FB_API_VERSION}/act_{data.account_id}/adsets",
         json=adset_payload
     )
     logger.debug(f"AdSet response {resp_adset.status_code}: {resp_adset.text}")
-    # se billing_event não disponível, faz retry com IMPRESSIONS
     if resp_adset.status_code != 200:
         err = resp_adset.json().get("error", {})
         if err.get("error_subcode") == 2446404:
@@ -265,14 +260,108 @@ async def create_campaign(req: Request):
     adset_id = resp_adset.json()["id"]
     logger.info(f"AdSet ID: {adset_id}")
 
-    # 4) upload vídeo (se houver) e montar creative_spec (igual antes)
-    # … (mesma lógica de creative + criação de Ad) …
+    # 4) Vídeo + creative_spec
+    video_id  = None
+    thumbnail = None
+    if data.video.strip():
+        try:
+            video_id  = upload_video_to_fb(data.account_id, data.token, data.video.strip())
+            thumbnail = fetch_video_thumbnail(video_id, data.token)
+        except Exception as e:
+            rollback_campaign(campaign_id, data.token)
+            raise HTTPException(status_code=400, detail=str(e))
+
+    default_link    = data.content or f"https://instagram.com/seuperfil"
+    default_message = data.description
+    cta             = CTA_MAP[data.objective].copy()
+    # para tráfego ao perfil
+    cta["value"]["link"] = default_link
+
+    if video_id:
+        creative_spec = {
+            "video_data": {
+                "video_id":       video_id,
+                "message":        default_message,
+                "image_url":      thumbnail,
+                "call_to_action": cta
+            }
+        }
+    elif data.image.strip():
+        creative_spec = {
+            "link_data": {
+                "message":        default_message,
+                "link":           default_link,
+                "picture":        data.image.strip(),
+                "call_to_action": cta
+            }
+        }
+    elif any(u.strip() for u in data.carrossel):
+        attachments = [
+            {"link": default_link, "picture": u, "message": default_message}
+            for u in data.carrossel if u.strip()
+        ]
+        creative_spec = {
+            "link_data": {
+                "child_attachments": attachments,
+                "message":           default_message,
+                "link":              default_link,
+                "call_to_action":    cta
+            }
+        }
+    else:
+        creative_spec = {
+            "link_data": {
+                "message":        default_message,
+                "link":           default_link,
+                "picture":        "https://via.placeholder.com/1200x628.png?text=Ad",
+                "call_to_action": cta
+            }
+        }
+
+    creative_payload = {
+        "name":              f"Creative {data.campaign_name}",
+        "object_story_spec": {"page_id": page_id, **creative_spec},
+        "access_token":      data.token
+    }
+    logger.debug(f"Creative payload: {json.dumps(creative_payload,indent=2)}")
+    creative_resp = requests.post(
+        f"https://graph.facebook.com/{FB_API_VERSION}/act_{data.account_id}/adcreatives",
+        json=creative_payload
+    )
+    logger.debug(f"Creative response {creative_resp.status_code}: {creative_resp.text}")
+    if creative_resp.status_code != 200:
+        rollback_campaign(campaign_id, data.token)
+        raise HTTPException(status_code=400, detail=extract_fb_error(creative_resp))
+    creative_id = creative_resp.json()["id"]
+    logger.info(f"Creative ID: {creative_id}")
+
+    # 5) Criar Ad final
+    ad_payload = {
+        "name":         f"Ad {data.campaign_name}",
+        "adset_id":     adset_id,
+        "creative":     {"creative_id": creative_id},
+        "status":       "ACTIVE",
+        "access_token": data.token
+    }
+    logger.debug(f"Ad payload: {json.dumps(ad_payload)}")
+    ad_resp = requests.post(
+        f"https://graph.facebook.com/{FB_API_VERSION}/act_{data.account_id}/ads",
+        json=ad_payload
+    )
+    logger.debug(f"Ad response {ad_resp.status_code}: {ad_resp.text}")
+    if ad_resp.status_code != 200:
+        rollback_campaign(campaign_id, data.token)
+        raise HTTPException(status_code=400, detail=extract_fb_error(ad_resp))
+    ad_id = ad_resp.json()["id"]
+    logger.info(f"Ad ID: {ad_id}")
 
     return {
-        "status":      "success",
-        "campaign_id": campaign_id,
-        "ad_set_id":   adset_id,
-        # inclua creative_id e ad_id aqui conforme seu fluxo
+        "status":        "success",
+        "campaign_id":   campaign_id,
+        "ad_set_id":     adset_id,
+        "creative_id":   creative_id,
+        "ad_id":         ad_id,
+        "campaign_link": f"https://www.facebook.com/adsmanager/manage/campaigns?act={data.account_id}&campaign_ids={campaign_id}"
     }
 
 if __name__ == "__main__":
