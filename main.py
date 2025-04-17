@@ -31,17 +31,15 @@ app.add_middleware(
 )
 
 # ─── Constantes ─────────────────────────────────────────────────────────────────
-FB_API_VERSION      = "v16.0"
-GLOBAL_COUNTRIES    = ["US","CA","GB","DE","FR","BR","IN","MX","IT","ES","NL","SE","NO","DK","FI","CH","JP","KR"]
-PUBLISHER_PLATFORMS = ["facebook","instagram","audience_network","messenger"]
+FB_API_VERSION       = "v16.0"
+GLOBAL_COUNTRIES     = ["US","CA","GB","DE","FR","BR","IN","MX","IT","ES","NL","SE","NO","DK","FI","CH","JP","KR"]
+PUBLISHER_PLATFORMS  = ["facebook","instagram","audience_network","messenger"]
 
-# Map objective → optimization_goal
 OBJECTIVE_TO_OPT_GOAL = {
     "OUTCOME_AWARENESS": "IMPRESSIONS",
     "OUTCOME_TRAFFIC":   "LINK_CLICKS",
 }
 
-# Map objective → billing_event
 OBJECTIVE_TO_BILLING_EVENT = {
     "OUTCOME_AWARENESS": "IMPRESSIONS",
     "OUTCOME_TRAFFIC":   "LINK_CLICKS",
@@ -52,7 +50,12 @@ CTA_MAP = {
     "OUTCOME_TRAFFIC":   {"type": "LEARN_MORE", "value": {"link": ""}},
 }
 
-MIN_DAILY_BUDGET_CENTS = 500  # R$5.00 or USD $5.00
+# mínimos diários por moeda (em centavos)
+MIN_DAILY_BUDGET_BY_CURRENCY = {
+    "USD": 500,    # US$5.00
+    "BRL": 1468,   # R$14.68 (Facebook exige esse mínimo em BRL)
+    "EUR": 500,    # €5.00
+}
 
 # ─── Helpers ────────────────────────────────────────────────────────────────────
 def extract_fb_error(resp: requests.Response) -> str:
@@ -63,12 +66,20 @@ def extract_fb_error(resp: requests.Response) -> str:
         return resp.text or "Erro desconhecido"
 
 def rollback_campaign(campaign_id: str, token: str):
-    url = f"https://graph.facebook.com/{FB_API_VERSION}/{campaign_id}"
     try:
+        url = f"https://graph.facebook.com/{FB_API_VERSION}/{campaign_id}"
         requests.delete(url, params={"access_token": token})
         logger.info(f"Rollback: campanha {campaign_id} deletada")
     except:
         logger.exception("Falha no rollback da campanha")
+
+def get_account_insights(account_id: str, token: str):
+    """Retorna dict com currency, spend_cap e amount_spent."""
+    url = f"https://graph.facebook.com/{FB_API_VERSION}/act_{account_id}"
+    resp = requests.get(url, params={"fields": "currency,spend_cap,amount_spent", "access_token": token})
+    if resp.status_code != 200:
+        raise HTTPException(status_code=resp.status_code, detail="Erro ao buscar info da conta")
+    return resp.json()
 
 def upload_video_to_fb(account_id: str, token: str, video_url: str) -> str:
     logger.debug(f"Iniciando upload de vídeo via URL: {video_url}")
@@ -106,22 +117,7 @@ def get_page_id(token: str) -> str:
         raise HTTPException(status_code=533, detail="Nenhuma página disponível")
     return data[0]["id"]
 
-def check_account_balance(account_id: str, token: str, required_cents: int):
-    logger.debug(f"Verificando saldo: required={required_cents} cents")
-    resp = requests.get(
-        f"https://graph.facebook.com/{FB_API_VERSION}/act_{account_id}",
-        params={"fields": "spend_cap,amount_spent", "access_token": token}
-    )
-    if resp.status_code != 200:
-        raise HTTPException(status_code=resp.status_code, detail="Erro ao verificar saldo")
-    js = resp.json()
-    cap   = int(js.get("spend_cap", 0))
-    spent = int(js.get("amount_spent", 0))
-    logger.debug(f"Saldo conta: cap={cap}, spent={spent}")
-    if cap - spent < required_cents:
-        raise HTTPException(status_code=402, detail="Fundos insuficientes")
-
-# ─── Modelos Pydantic ───────────────────────────────────────────────────────────
+# ─── Pydantic model ─────────────────────────────────────────────────────────────
 class CampaignRequest(BaseModel):
     account_id: str
     token: str
@@ -170,21 +166,29 @@ async def create_campaign(req: Request):
     logger.debug(f"Request body: {json.dumps(body)}")
     data = CampaignRequest(**body)
 
-    # Validações iniciais
+    # checagens iniciais
     if data.budget <= 0:
         logger.error("budget inválido ou zero")
     if not data.campaign_name:
-        logger.error("campaign_name está vazio")
+        logger.error("campaign_name vazio")
     if not data.initial_date or not data.final_date:
         logger.error("initial_date ou final_date vazio")
     if not (data.video or data.image or any(data.carrossel)):
         logger.warning("Sem mídia: será usado placeholder")
 
-    # 1) Verifica saldo
-    total_cents = int(data.budget * 100)
-    check_account_balance(data.account_id, data.token, total_cents)
+    # 1) info da conta (inclui currency, saldo)
+    info = get_account_insights(data.account_id, data.token)
+    currency = info.get("currency", "USD")
+    spend_cap = int(info.get("spend_cap", 0))
+    spent     = int(info.get("amount_spent", 0))
+    logger.debug(f"Conta {data.account_id}: currency={currency}, cap={spend_cap}, spent={spent}")
 
-    # 2) Cria campanha
+    # checa saldo
+    total_cents = int(data.budget * 100)
+    if spend_cap - spent < total_cents:
+        raise HTTPException(status_code=402, detail="Fundos insuficientes")
+
+    # 2) cria campaign
     camp_payload = {
         "name":                 data.campaign_name,
         "objective":            data.objective,
@@ -202,27 +206,34 @@ async def create_campaign(req: Request):
         raise HTTPException(status_code=400, detail=extract_fb_error(camp_resp))
     campaign_id = camp_resp.json()["id"]
 
-    # 3) Prepara datas e orçamento
+    # 3) datas e orçamento diário
     start_dt  = datetime.strptime(data.initial_date, "%m/%d/%Y")
     end_dt    = datetime.strptime(data.final_date,   "%m/%d/%Y")
     days_diff = (end_dt - start_dt).days
     days      = max(days_diff, 1)
     daily     = total_cents // days
     logger.debug(f"Dias planejados: {days_diff} → usando {days} → budget diário: {daily} cents")
-    if daily < MIN_DAILY_BUDGET_CENTS:
-        logger.error(f"Orçamento diário abaixo do mínimo de {MIN_DAILY_BUDGET_CENTS/100:.2f}")
-        rollback_campaign(campaign_id, data.token)
-        raise HTTPException(status_code=400, detail=f"Orçamento diário deve ser ≥ {MIN_DAILY_BUDGET_CENTS/100:.2f}")
 
-    # ajusta duração para ≥24h
+    # determina mínimo baseado em currency
+    min_cents = MIN_DAILY_BUDGET_BY_CURRENCY.get(currency, MIN_DAILY_BUDGET_BY_CURRENCY["USD"])
+    if daily < min_cents:
+        logger.error(f"Orçamento diário {daily/100:.2f}{currency} abaixo do mínimo {min_cents/100:.2f}{currency}")
+        rollback_campaign(campaign_id, data.token)
+        raise HTTPException(
+            status_code=400,
+            detail=f"Orçamento diário deve ser ≥ {min_cents/100:.2f} {currency}"
+        )
+
+    # garante duração ≥24h
     start_ts = int(start_dt.timestamp())
     end_ts   = int(end_dt.timestamp())
     if end_ts - start_ts < 86400:
-        logger.warning("Duração <24h, ajustando end_time para +24h")
+        logger.warning("Duração <24h, ajustando para +24h")
         end_ts = start_ts + 86400
 
-    opt_goal      = OBJECTIVE_TO_OPT_GOAL.get(data.objective, "LINK_CLICKS")
-    billing_event = OBJECTIVE_TO_BILLING_EVENT.get(data.objective, "IMPRESSIONS")
+    # 4) Cria Ad Set
+    opt_goal      = OBJECTIVE_TO_OPT_GOAL[data.objective]
+    billing_event = OBJECTIVE_TO_BILLING_EVENT[data.objective]
     genders       = {"male":[1], "female":[2]}.get(data.target_sex.lower(), [])
     page_id       = get_page_id(data.token)
 
@@ -244,9 +255,7 @@ async def create_campaign(req: Request):
         "end_time":           end_ts,
         "access_token":       data.token
     }
-    if data.objective == "OUTCOME_LEADS":
-        adset_payload["promoted_object"] = {"page_id": page_id}
-
+    # Leads: sem promoted_object, pois trata como tráfico
     logger.debug(f"Payload AdSet: {json.dumps(adset_payload)}")
     resp_adset = requests.post(
         f"https://graph.facebook.com/{FB_API_VERSION}/act_{data.account_id}/adsets",
@@ -259,7 +268,7 @@ async def create_campaign(req: Request):
         raise HTTPException(status_code=400, detail=extract_fb_error(resp_adset))
     adset_id = resp_adset.json()["id"]
 
-    # 4) Upload vídeo + thumbnail (se houver)
+    # 5) Upload vídeo + thumbnail
     video_id  = None
     thumbnail = None
     if data.video.strip():
@@ -267,15 +276,15 @@ async def create_campaign(req: Request):
             video_id  = upload_video_to_fb(data.account_id, data.token, data.video.strip().rstrip(";,"))
             thumbnail = fetch_video_thumbnail(video_id, data.token)
         except Exception as e:
-            logger.exception("Erro durante upload de vídeo")
+            logger.exception("Erro no upload de vídeo")
             rollback_campaign(campaign_id, data.token)
             raise HTTPException(status_code=400, detail=str(e))
 
-    # 5) Monta creative_spec
+    # 6) Monta creative_spec
     default_link    = data.content or "https://www.adstock.ai"
     default_message = data.description
     if video_id:
-        cta = CTA_MAP.get(data.objective, {}).copy()
+        cta = CTA_MAP[data.objective].copy()
         cta["value"]["link"] = default_link
         creative_spec = {"video_data": {
             "video_id":       video_id,
@@ -321,7 +330,7 @@ async def create_campaign(req: Request):
         raise HTTPException(status_code=400, detail=extract_fb_error(creative_resp))
     creative_id = creative_resp.json()["id"]
 
-    # 6) Cria Ad final
+    # 7) Cria Ad final
     ad_payload = {
         "name":         f"Ad {data.campaign_name}",
         "adset_id":     adset_id,
@@ -341,7 +350,7 @@ async def create_campaign(req: Request):
         raise HTTPException(status_code=400, detail=extract_fb_error(ad_resp))
     ad_id = ad_resp.json()["id"]
 
-    # 7) Retorno
+    # 8) Retorno
     return {
         "status":        "success",
         "campaign_id":   campaign_id,
