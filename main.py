@@ -34,7 +34,7 @@ FB_API_VERSION      = "v16.0"
 GLOBAL_COUNTRIES    = ["US","CA","GB","DE","FR","BR","IN","MX","IT","ES","NL","SE","NO","DK","FI","CH","JP","KR"]
 PUBLISHER_PLATFORMS = ["facebook","instagram","audience_network","messenger"]
 
-# Mapeamentos para optimization_goal por objective
+# Map objective → optimization_goal
 OBJECTIVE_TO_OPT_GOAL = {
     "OUTCOME_AWARENESS": "IMPRESSIONS",
     "OUTCOME_TRAFFIC":   "LINK_CLICKS",
@@ -42,7 +42,15 @@ OBJECTIVE_TO_OPT_GOAL = {
     "OUTCOME_SALES":     "OFFSITE_CONVERSIONS",
 }
 
-# Mapeamentos para call_to_action por objective
+# Map objective → billing_event
+OBJECTIVE_TO_BILLING_EVENT = {
+    "OUTCOME_AWARENESS": "IMPRESSIONS",
+    "OUTCOME_TRAFFIC":   "LINK_CLICKS",
+    "OUTCOME_LEADS":     "IMPRESSIONS",
+    "OUTCOME_SALES":     "IMPRESSIONS",
+}
+
+# Map objective → call_to_action (placeholder link will be set later)
 CTA_MAP = {
     "OUTCOME_AWARENESS": {"type": "LEARN_MORE",    "value": {"link": ""}},
     "OUTCOME_TRAFFIC":   {"type": "LEARN_MORE",    "value": {"link": ""}},
@@ -82,9 +90,9 @@ def fetch_video_thumbnail(video_id: str, token: str) -> str:
     for _ in range(5):
         resp = requests.get(url, params={"access_token": token})
         if resp.status_code == 200:
-            data = resp.json().get("data", [])
-            if data:
-                return data[0]["uri"]
+            items = resp.json().get("data", [])
+            if items:
+                return items[0]["uri"]
         logger.debug("Thumbnail não disponível ainda, aguardando...")
         time.sleep(2)
     raise Exception("Não foi possível obter thumbnail do vídeo")
@@ -135,10 +143,10 @@ class CampaignRequest(BaseModel):
     @field_validator("objective", mode="before")
     def map_objective(cls, v):
         m = {
-            "Vendas":          "OUTCOME_SALES",
+            "Vendas":           "OUTCOME_SALES",
             "Promover site/app":"OUTCOME_TRAFFIC",
-            "Leads":           "OUTCOME_LEADS",
-            "Alcance de marca":"OUTCOME_AWARENESS",
+            "Leads":            "OUTCOME_LEADS",
+            "Alcance de marca": "OUTCOME_AWARENESS",
         }
         return m.get(v, v)
 
@@ -190,32 +198,37 @@ async def create_campaign(req: Request):
         rollback_campaign(camp_id, data.token)
         raise HTTPException(status_code=400, detail="Duração mínima de 24h")
 
-    opt_goal = OBJECTIVE_TO_OPT_GOAL.get(data.objective, "LINK_CLICKS")
-    genders  = {"male": [1], "female": [2]}.get(data.target_sex.lower(), [])
-    page_id  = get_page_id(data.token)
+    opt_goal      = OBJECTIVE_TO_OPT_GOAL.get(data.objective, "LINK_CLICKS")
+    billing_event = OBJECTIVE_TO_BILLING_EVENT.get(data.objective, "IMPRESSIONS")
+    genders       = {"male": [1], "female": [2]}.get(data.target_sex.lower(), [])
+    page_id       = get_page_id(data.token)
+
+    adset_payload = {
+        "name":             f"AdSet {data.campaign_name}",
+        "campaign_id":      camp_id,
+        "daily_budget":     daily,
+        "billing_event":    billing_event,
+        "optimization_goal":opt_goal,
+        "bid_amount":       100,
+        "targeting": {
+            "geo_locations": {"countries": GLOBAL_COUNTRIES},
+            "genders":       genders,
+            "age_min":       data.target_age,
+            "age_max":       data.target_age,
+            "publisher_platforms": PUBLISHER_PLATFORMS
+        },
+        "start_time":       int(start_dt.timestamp()),
+        "end_time":         int(end_dt.timestamp()),
+        "access_token":     data.token
+    }
+
+    # para Lead Generation, é preciso promoted_object
+    if data.objective == "OUTCOME_LEADS":
+        adset_payload["promoted_object"] = {"page_id": page_id}
 
     adset_resp = requests.post(
         f"https://graph.facebook.com/{FB_API_VERSION}/act_{data.account_id}/adsets",
-        json={
-            "name": f"AdSet {data.campaign_name}",
-            "campaign_id": camp_id,
-            "daily_budget": daily,
-            "billing_event": "IMPRESSIONS",
-            "optimization_goal": opt_goal,
-            "bid_amount": 100,
-            "targeting": {
-                "geo_locations": {"countries": GLOBAL_COUNTRIES},
-                "genders": genders,
-                "age_min": data.target_age,
-                "age_max": data.target_age,
-                "publisher_platforms": PUBLISHER_PLATFORMS
-            },
-            "start_time": int(start_dt.timestamp()),
-            "end_time":   int(end_dt.timestamp()),
-            "dsa_beneficiary": page_id,
-            "dsa_payor":       page_id,
-            "access_token":    data.token
-        }
+        json=adset_payload
     )
     if adset_resp.status_code != 200:
         rollback_campaign(camp_id, data.token)
@@ -239,7 +252,7 @@ async def create_campaign(req: Request):
     default_message = data.description
 
     if video_id:
-        cta             = CTA_MAP.get(data.objective, {}).copy()
+        cta                = CTA_MAP.get(data.objective, {}).copy()
         cta["value"]["link"] = default_link
         creative_spec = {
             "video_data": {
@@ -276,9 +289,9 @@ async def create_campaign(req: Request):
     creative_resp = requests.post(
         f"https://graph.facebook.com/{FB_API_VERSION}/act_{data.account_id}/adcreatives",
         json={
-            "name": f"Creative {data.campaign_name}",
+            "name":             f"Creative {data.campaign_name}",
             "object_story_spec": {"page_id": page_id, **creative_spec},
-            "access_token": data.token
+            "access_token":     data.token
         }
     )
     if creative_resp.status_code != 200:
@@ -311,7 +324,6 @@ async def create_campaign(req: Request):
         "ad_id":         ad_id,
         "campaign_link": f"https://www.facebook.com/adsmanager/manage/campaigns?act={data.account_id}&campaign_ids={camp_id}"
     }
-
 
 if __name__ == "__main__":
     import uvicorn
