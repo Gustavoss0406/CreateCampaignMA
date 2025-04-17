@@ -10,7 +10,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field, field_validator
-from typing import List, Optional
+from typing import List
 
 # ─── Logging ───────────────────────────────────────────────────────────────────
 logging.basicConfig(
@@ -35,24 +35,24 @@ FB_API_VERSION      = "v16.0"
 GLOBAL_COUNTRIES    = ["US","CA","GB","DE","FR","BR","IN","MX","IT","ES","NL","SE","NO","DK","FI","CH","JP","KR"]
 PUBLISHER_PLATFORMS = ["facebook","instagram","audience_network","messenger"]
 
+# Map objective → optimization_goal
 OBJECTIVE_TO_OPT_GOAL = {
     "OUTCOME_AWARENESS": "IMPRESSIONS",
     "OUTCOME_TRAFFIC":   "LINK_CLICKS",
-    "OUTCOME_LEADS":     "LEAD_GENERATION",
-    # OUTCOME_SALES no longer used
 }
 
+# Map objective → billing_event
 OBJECTIVE_TO_BILLING_EVENT = {
     "OUTCOME_AWARENESS": "IMPRESSIONS",
     "OUTCOME_TRAFFIC":   "LINK_CLICKS",
-    "OUTCOME_LEADS":     "IMPRESSIONS",
 }
 
 CTA_MAP = {
     "OUTCOME_AWARENESS": {"type": "LEARN_MORE", "value": {"link": ""}},
     "OUTCOME_TRAFFIC":   {"type": "LEARN_MORE", "value": {"link": ""}},
-    "OUTCOME_LEADS":     {"type": "SIGN_UP",    "value": {"link": ""}},
 }
+
+MIN_DAILY_BUDGET_CENTS = 500  # R$5.00 or USD $5.00
 
 # ─── Helpers ────────────────────────────────────────────────────────────────────
 def extract_fb_error(resp: requests.Response) -> str:
@@ -142,9 +142,9 @@ class CampaignRequest(BaseModel):
     @field_validator("objective", mode="before")
     def map_objective(cls, v):
         m = {
-            "Vendas":            "OUTCOME_TRAFFIC",    # agora mapeia Vendas para tráfego
+            "Vendas":            "OUTCOME_TRAFFIC",
             "Promover site/app": "OUTCOME_TRAFFIC",
-            "Leads":             "OUTCOME_LEADS",
+            "Leads":             "OUTCOME_TRAFFIC",
             "Alcance de marca":  "OUTCOME_AWARENESS",
         }
         return m.get(v, v)
@@ -170,15 +170,15 @@ async def create_campaign(req: Request):
     logger.debug(f"Request body: {json.dumps(body)}")
     data = CampaignRequest(**body)
 
-    # Checagens iniciais
-    if not data.campaign_name:
-        logger.error("campaign_name está vazio")
+    # Validações iniciais
     if data.budget <= 0:
         logger.error("budget inválido ou zero")
+    if not data.campaign_name:
+        logger.error("campaign_name está vazio")
     if not data.initial_date or not data.final_date:
         logger.error("initial_date ou final_date vazio")
     if not (data.video or data.image or any(data.carrossel)):
-        logger.warning("Sem mídia: video, image e carrossel estão vazios — será usado placeholder")
+        logger.warning("Sem mídia: será usado placeholder")
 
     # 1) Verifica saldo
     total_cents = int(data.budget * 100)
@@ -209,10 +209,10 @@ async def create_campaign(req: Request):
     days      = max(days_diff, 1)
     daily     = total_cents // days
     logger.debug(f"Dias planejados: {days_diff} → usando {days} → budget diário: {daily} cents")
-    if daily < 576:
-        logger.error("Orçamento diário abaixo do mínimo permitido")
+    if daily < MIN_DAILY_BUDGET_CENTS:
+        logger.error(f"Orçamento diário abaixo do mínimo de {MIN_DAILY_BUDGET_CENTS/100:.2f}")
         rollback_campaign(campaign_id, data.token)
-        raise HTTPException(status_code=400, detail="Orçamento diário deve ser ≥ $5.76")
+        raise HTTPException(status_code=400, detail=f"Orçamento diário deve ser ≥ {MIN_DAILY_BUDGET_CENTS/100:.2f}")
 
     # ajusta duração para ≥24h
     start_ts = int(start_dt.timestamp())
