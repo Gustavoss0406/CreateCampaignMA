@@ -30,8 +30,8 @@ app.add_middleware(
 )
 
 # ─── Constantes ─────────────────────────────────────────────────────────────────
-FB_API_VERSION    = "v16.0"
-GLOBAL_COUNTRIES  = ["US","CA","GB","DE","FR","BR","IN","MX","IT","ES","NL","SE","NO","DK","FI","CH","JP","KR"]
+FB_API_VERSION      = "v16.0"
+GLOBAL_COUNTRIES    = ["US","CA","GB","DE","FR","BR","IN","MX","IT","ES","NL","SE","NO","DK","FI","CH","JP","KR"]
 PUBLISHER_PLATFORMS = ["facebook","instagram","audience_network","messenger"]
 
 # ─── Helpers ────────────────────────────────────────────────────────────────────
@@ -85,43 +85,47 @@ def get_page_id(token: str) -> str:
 
 def check_account_balance(account_id: str, token: str, required_cents: int):
     resp = requests.get(f"https://graph.facebook.com/{FB_API_VERSION}/act_{account_id}",
-                        params={"fields":"spend_cap,amount_spent","access_token":token})
+                        params={"fields": "spend_cap,amount_spent", "access_token": token})
     if resp.status_code != 200:
         raise HTTPException(status_code=resp.status_code, detail="Erro ao verificar saldo")
     js = resp.json()
-    cap   = int(js.get("spend_cap", 0))
+    cap = int(js.get("spend_cap", 0))
     spent = int(js.get("amount_spent", 0))
     if cap - spent < required_cents:
         raise HTTPException(status_code=402, detail="Fundos insuficientes")
 
 # ─── Modelos Pydantic ───────────────────────────────────────────────────────────
 class CampaignRequest(BaseModel):
-    account_id: str
-    token: str
+    account_id:   str
+    token:        str
     campaign_name: str = ""
-    objective: str = "OUTCOME_TRAFFIC"
-    content: str = ""
-    description: str = ""
-    keywords: str = ""
-    budget: float = 0.0
-    initial_date: str = ""
-    final_date: str = ""
-    target_sex: str = ""
-    target_age: int = 0
-    image: str = ""
-    carrossel: List[str] = []
-    video: str = Field(default="", alias="video")
+    objective:     str = "OUTCOME_TRAFFIC"
+    content:       str = ""
+    description:   str = ""
+    keywords:      str = ""
+    budget:        float = 0.0
+    initial_date:  str = ""
+    final_date:    str = ""
+    target_sex:    str = ""
+    target_age:    int = 0
+    image:         str = ""
+    carrossel:     List[str] = []
+    video:         str = Field(default="", alias="video")
 
     @field_validator("objective", mode="before")
     def map_objective(cls, v):
-        m = {"Vendas":"OUTCOME_SALES", "Promover site/app":"OUTCOME_TRAFFIC",
-             "Leads":"OUTCOME_LEADS", "Alcance de marca":"OUTCOME_AWARENESS"}
+        m = {
+            "Vendas": "OUTCOME_SALES",
+            "Promover site/app": "OUTCOME_TRAFFIC",
+            "Leads": "OUTCOME_LEADS",
+            "Alcance de marca": "OUTCOME_AWARENESS"
+        }
         return m.get(v, v)
 
     @field_validator("budget", mode="before")
     def parse_budget(cls, v):
         if isinstance(v, str):
-            return float(v.replace("$","").replace(",","."))
+            return float(v.replace("$", "").replace(",", "."))
         return v
 
 @app.exception_handler(RequestValidationError)
@@ -129,18 +133,18 @@ async def validation_error(request: Request, exc: RequestValidationError):
     msg = exc.errors()[0].get("msg", "Erro de validação")
     return JSONResponse(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, content={"detail": msg})
 
-# ─── Endpoint ──────────────────────────────────────────────────────────────────
+# ─── Endpoint principal ───────────────────────────────────────────────────────
 @app.post("/create_campaign")
 async def create_campaign(req: Request):
     data = CampaignRequest(**await req.json())
     logger.info(f"Iniciando campanha: {data.campaign_name}")
 
-    # 1) Saldo
+    # 1) Verifica saldo
     total_cents = int(data.budget * 100)
     check_account_balance(data.account_id, data.token, total_cents)
 
-    # 2) Criar campanha
-    camp = requests.post(
+    # 2) Cria campanha
+    camp_resp = requests.post(
         f"https://graph.facebook.com/{FB_API_VERSION}/act_{data.account_id}/campaigns",
         json={
             "name": data.campaign_name,
@@ -150,15 +154,16 @@ async def create_campaign(req: Request):
             "special_ad_categories": []
         }
     )
-    if camp.status_code != 200:
-        raise HTTPException(status_code=400, detail=extract_fb_error(camp))
-    camp_id = camp.json()["id"]
+    if camp_resp.status_code != 200:
+        raise HTTPException(status_code=400, detail=extract_fb_error(camp_resp))
+    camp_id = camp_resp.json()["id"]
 
-    # 3) Ad Set
+    # 3) Criação do Ad Set (corrigido para todos os objetivos)
     start_dt = datetime.strptime(data.initial_date, "%m/%d/%Y")
     end_dt   = datetime.strptime(data.final_date,   "%m/%d/%Y")
     days     = max((end_dt - start_dt).days, 1)
     daily    = total_cents // days
+
     if daily < 576:
         rollback_campaign(camp_id, data.token)
         raise HTTPException(status_code=400, detail="Orçamento diário deve ser ≥ $5.76")
@@ -166,40 +171,48 @@ async def create_campaign(req: Request):
         rollback_campaign(camp_id, data.token)
         raise HTTPException(status_code=400, detail="Duração mínima 24h")
 
-    opt_goal = "IMPRESSIONS" if data.objective=="OUTCOME_AWARENESS" else "LINK_CLICKS"
-    genders  = {"male":[1], "female":[2]}.get(data.target_sex.lower(), [])
-    page_id  = get_page_id(data.token)
+    # otimização e cobrança por objetivo
+    if data.objective == "OUTCOME_AWARENESS":
+        optimization_goal = "REACH"
+        billing_event    = "IMPRESSIONS"
+    else:
+        optimization_goal = "LINK_CLICKS"
+        billing_event    = "LINK_CLICKS"
 
-    adset = requests.post(
+    page_id = get_page_id(data.token)
+    promoted_object = {"page_id": page_id}
+
+    adset_payload = {
+        "name":              f"AdSet {data.campaign_name}",
+        "campaign_id":       camp_id,
+        "daily_budget":      daily,
+        "billing_event":     billing_event,
+        "optimization_goal": optimization_goal,
+        "bid_amount":        100,
+        "targeting": {
+            "geo_locations":      {"countries": GLOBAL_COUNTRIES},
+            "genders":            {"male":[1], "female":[2]}.get(data.target_sex.lower(), []),
+            "age_min":            data.target_age,
+            "age_max":            data.target_age,
+            "publisher_platforms": PUBLISHER_PLATFORMS
+        },
+        "start_time":       int(start_dt.timestamp()),
+        "end_time":         int(end_dt.timestamp()),
+        "promoted_object":  promoted_object,
+        "access_token":     data.token
+    }
+    adset_resp = requests.post(
         f"https://graph.facebook.com/{FB_API_VERSION}/act_{data.account_id}/adsets",
-        json={
-            "name": f"AdSet {data.campaign_name}",
-            "campaign_id": camp_id,
-            "daily_budget": daily,
-            "billing_event": "IMPRESSIONS",
-            "optimization_goal": opt_goal,
-            "bid_amount": 100,
-            "targeting": {
-                "geo_locations": {"countries": GLOBAL_COUNTRIES},
-                "genders": genders,
-                "age_min": data.target_age,
-                "age_max": data.target_age,
-                "publisher_platforms": PUBLISHER_PLATFORMS
-            },
-            "start_time": int(start_dt.timestamp()),
-            "end_time":   int(end_dt.timestamp()),
-            "dsa_beneficiary": page_id,
-            "dsa_payor":       page_id,
-            "access_token":    data.token
-        }
+        json=adset_payload
     )
-    if adset.status_code != 200:
+    if adset_resp.status_code != 200:
         rollback_campaign(camp_id, data.token)
-        raise HTTPException(status_code=400, detail=extract_fb_error(adset))
-    adset_id = adset.json()["id"]
+        raise HTTPException(status_code=400, detail=extract_fb_error(adset_resp))
+    adset_id = adset_resp.json()["id"]
 
-    # 4) Se vídeo: upload + thumbnail
+    # 4) Upload do vídeo (se houver) + thumbnail
     video_id = None
+    thumbnail = None
     if data.video.strip():
         url = data.video.strip().rstrip(";,")
         try:
@@ -209,20 +222,17 @@ async def create_campaign(req: Request):
             rollback_campaign(camp_id, data.token)
             raise HTTPException(status_code=400, detail=str(e))
 
-    # 5) Montar creative_spec
+    # 5) Monta spec do Creative
     default_link    = data.content or "https://www.adstock.ai"
     default_message = data.description
 
     if video_id:
         creative_spec = {
             "video_data": {
-                "video_id": video_id,
-                "message": default_message,
-                "image_url": thumbnail,
-                "call_to_action": {
-                    "type": "LEARN_MORE",
-                    "value": {"link": default_link}
-                }
+                "video_id":       video_id,
+                "message":        default_message,
+                "image_url":      thumbnail,
+                "call_to_action": {"type":"LEARN_MORE","value":{"link":default_link}}
             }
         }
     elif data.image.strip():
@@ -234,11 +244,13 @@ async def create_campaign(req: Request):
             }
         }
     elif any(u.strip() for u in data.carrossel):
-        child = [{"link":default_link,"picture":u,"message":default_message}
-                 for u in data.carrossel if u.strip()]
-        creative_spec = {"link_data": {"child_attachments":child,
-                                       "message":default_message,
-                                       "link":default_link}}
+        child = [
+            {"link": default_link, "picture": u, "message": default_message}
+            for u in data.carrossel if u.strip()
+        ]
+        creative_spec = {"link_data": {"child_attachments": child,
+                                       "message": default_message,
+                                       "link": default_link}}
     else:
         creative_spec = {
             "link_data": {
@@ -248,8 +260,8 @@ async def create_campaign(req: Request):
             }
         }
 
-    # 6) Criar Ad Creative
-    creative = requests.post(
+    # 6) Cria Ad Creative
+    creative_resp = requests.post(
         f"https://graph.facebook.com/{FB_API_VERSION}/act_{data.account_id}/adcreatives",
         json={
             "name": f"Creative {data.campaign_name}",
@@ -257,28 +269,28 @@ async def create_campaign(req: Request):
             "access_token": data.token
         }
     )
-    if creative.status_code != 200:
+    if creative_resp.status_code != 200:
         rollback_campaign(camp_id, data.token)
-        raise HTTPException(status_code=400, detail=extract_fb_error(creative))
-    creative_id = creative.json()["id"]
+        raise HTTPException(status_code=400, detail=extract_fb_error(creative_resp))
+    creative_id = creative_resp.json()["id"]
 
-    # 7) Criar Ad
-    ad = requests.post(
+    # 7) Cria o Ad
+    ad_resp = requests.post(
         f"https://graph.facebook.com/{FB_API_VERSION}/act_{data.account_id}/ads",
         json={
-            "name":      f"Ad {data.campaign_name}",
-            "adset_id":  adset_id,
-            "creative":  {"creative_id": creative_id},
-            "status":    "ACTIVE",
+            "name":         f"Ad {data.campaign_name}",
+            "adset_id":     adset_id,
+            "creative":     {"creative_id": creative_id},
+            "status":       "ACTIVE",
             "access_token": data.token
         }
     )
-    if ad.status_code != 200:
+    if ad_resp.status_code != 200:
         rollback_campaign(camp_id, data.token)
-        raise HTTPException(status_code=400, detail=extract_fb_error(ad))
-    ad_id = ad.json()["id"]
+        raise HTTPException(status_code=400, detail=extract_fb_error(ad_resp))
+    ad_id = ad_resp.json()["id"]
 
-    # 8) Retorno
+    # 8) Retorno final
     return {
         "status":        "success",
         "campaign_id":   camp_id,
