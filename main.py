@@ -9,7 +9,7 @@ from fastapi import FastAPI, HTTPException, Request, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, root_validator
 from typing import List, Optional
 
 # ─── Logging ───────────────────────────────────────────────────────────────────
@@ -154,6 +154,14 @@ class CampaignRequest(BaseModel):
             return float(v.replace("$", "").replace(",", "."))
         return v
 
+    @root_validator
+    def require_fields_for_objective(cls, values):
+        obj = values.get("objective")
+        pix = values.get("pixel_id")
+        if obj == "OUTCOME_SALES" and not pix:
+            raise ValueError("pixel_id é obrigatório para objetivo SALES")
+        return values
+
 @app.exception_handler(RequestValidationError)
 async def validation_error(request: Request, exc: RequestValidationError):
     msg = exc.errors()[0].get("msg", "Erro de validação")
@@ -195,7 +203,7 @@ async def create_campaign(req: Request):
     if daily < 576:
         rollback_campaign(campaign_id, data.token)
         raise HTTPException(status_code=400, detail="Orçamento diário deve ser ≥ $5.76")
-    now_ts  = int(time.time())
+    now_ts   = int(time.time())
     start_ts = max(int(start_dt.timestamp()), now_ts + 60)
     end_ts   = start_ts + days * 86400
 
@@ -222,16 +230,15 @@ async def create_campaign(req: Request):
         "end_time":           end_ts,
         "access_token":       data.token
     }
-    if data.objective == "OUTCOME_LEADS":
-        adset_payload["promoted_object"] = {"page_id": page_id}
-    elif data.objective == "OUTCOME_SALES":
-        if not data.pixel_id:
-            rollback_campaign(campaign_id, data.token)
-            raise HTTPException(status_code=400, detail="pixel_id obrigatório")
+
+    # sales já validado pelo root_validator
+    if data.objective == "OUTCOME_SALES":
         adset_payload["promoted_object"] = {
             "pixel_id":          data.pixel_id,
             "custom_event_type": "PURCHASE"
         }
+    elif data.objective == "OUTCOME_LEADS":
+        adset_payload["promoted_object"] = {"page_id": page_id}
 
     # 4) Cria AdSet
     logger.debug("Payload AdSet: %s", json.dumps(adset_payload, indent=2))
@@ -246,7 +253,7 @@ async def create_campaign(req: Request):
         raise HTTPException(status_code=400, detail=extract_fb_error(resp_adset))
     adset_id = resp_adset.json()["id"]
 
-    # 5) Vídeo + thumbnail
+    # 5) Upload vídeo + thumbnail (se houver)
     video_id = thumbnail = None
     if data.video.strip():
         try:
