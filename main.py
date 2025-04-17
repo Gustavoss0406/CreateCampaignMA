@@ -186,23 +186,18 @@ async def create_campaign(req: Request):
         raise HTTPException(status_code=400, detail=extract_fb_error(camp_resp))
     campaign_id = camp_resp.json()["id"]
 
-    # 3) Prepara datas e orçamentos
+    # 3) Datas e orçamento
     start_dt  = datetime.strptime(data.initial_date, "%m/%d/%Y")
     end_dt    = datetime.strptime(data.final_date,   "%m/%d/%Y")
-    days_diff = (end_dt - start_dt).days
-    days      = max(days_diff, 1)
+    days      = max((end_dt - start_dt).days, 1)
     daily     = total_cents // days
-    logger.debug(f"Dias planejados: {days_diff} → usando {days} → budget diário: {daily} cents")
-
+    logger.debug(f"Dias planejados: {(end_dt - start_dt).days} → usando {days} → budget diário: {daily} cents")
     if daily < 576:
         rollback_campaign(campaign_id, data.token)
         raise HTTPException(status_code=400, detail="Orçamento diário deve ser ≥ $5.76")
-
-    now_ts     = int(time.time())
-    start_ts   = int(start_dt.timestamp())
-    if start_ts < now_ts:
-        start_ts = now_ts + 60
-    end_ts     = start_ts + days * 86400
+    now_ts  = int(time.time())
+    start_ts = max(int(start_dt.timestamp()), now_ts + 60)
+    end_ts   = start_ts + days * 86400
 
     opt_goal      = OBJECTIVE_TO_OPT_GOAL.get(data.objective, "LINK_CLICKS")
     billing_event = OBJECTIVE_TO_BILLING_EVENT.get(data.objective, "IMPRESSIONS")
@@ -234,11 +229,11 @@ async def create_campaign(req: Request):
             rollback_campaign(campaign_id, data.token)
             raise HTTPException(status_code=400, detail="pixel_id obrigatório")
         adset_payload["promoted_object"] = {
-            "pixel_id":         data.pixel_id,
-            "custom_event_type":"PURCHASE"
+            "pixel_id":          data.pixel_id,
+            "custom_event_type": "PURCHASE"
         }
 
-    # 4) Cria Ad Set
+    # 4) Cria AdSet
     logger.debug("Payload AdSet: %s", json.dumps(adset_payload, indent=2))
     resp_adset = requests.post(
         f"https://graph.facebook.com/{FB_API_VERSION}/act_{data.account_id}/adsets",
@@ -251,9 +246,8 @@ async def create_campaign(req: Request):
         raise HTTPException(status_code=400, detail=extract_fb_error(resp_adset))
     adset_id = resp_adset.json()["id"]
 
-    # 5) Upload vídeo + thumbnail (se houver)
-    video_id  = None
-    thumbnail = None
+    # 5) Vídeo + thumbnail
+    video_id = thumbnail = None
     if data.video.strip():
         try:
             video_id  = upload_video_to_fb(data.account_id, data.token, data.video.strip())
@@ -265,52 +259,41 @@ async def create_campaign(req: Request):
     # 6) Monta creative_spec
     default_link    = data.content or "https://www.adstock.ai"
     default_message = data.description
-
     if video_id:
-        cta = CTA_MAP.get(data.objective, {}).copy()
+        cta = CTA_MAP[data.objective].copy()
         cta["value"]["link"] = default_link
-        creative_spec = {
-            "video_data": {
-                "video_id":       video_id,
-                "message":        default_message,
-                "image_url":      thumbnail,
-                "call_to_action": cta
-            }
-        }
+        creative_spec = {"video_data": {
+            "video_id": video_id,
+            "message": default_message,
+            "image_url": thumbnail,
+            "call_to_action": cta
+        }}
     elif data.image.strip():
-        creative_spec = {
-            "link_data": {
-                "message": default_message,
-                "link":    default_link,
-                "picture": data.image.strip()
-            }
-        }
+        creative_spec = {"link_data": {
+            "message": default_message,
+            "link": default_link,
+            "picture": data.image.strip()
+        }}
     elif any(u.strip() for u in data.carrossel):
-        attachments = [
-            {"link": default_link, "picture": u, "message": default_message}
-            for u in data.carrossel if u.strip()
-        ]
-        creative_spec = {
-            "link_data": {
-                "child_attachments": attachments,
-                "message":           default_message,
-                "link":              default_link
-            }
-        }
+        attachments = [{"link": default_link, "picture": u, "message": default_message}
+                       for u in data.carrossel if u.strip()]
+        creative_spec = {"link_data": {
+            "child_attachments": attachments,
+            "message": default_message,
+            "link": default_link
+        }}
     else:
-        creative_spec = {
-            "link_data": {
-                "message": default_message,
-                "link":    default_link,
-                "picture": "https://via.placeholder.com/1200x628.png?text=Ad+Placeholder"
-            }
-        }
+        creative_spec = {"link_data": {
+            "message": default_message,
+            "link": default_link,
+            "picture": "https://via.placeholder.com/1200x628.png?text=Ad+Placeholder"
+        }}
 
-    # 7) Cria Ad Creative
+    # 7) Cria AdCreative
     creative_payload = {
-        "name": f"Creative {data.campaign_name}",
-        "object_story_spec": {"page_id": page_id, **creative_spec},
-        "access_token":      data.token
+        "name":               f"Creative {data.campaign_name}",
+        "object_story_spec":  {"page_id": page_id, **creative_spec},
+        "access_token":       data.token
     }
     logger.debug("Payload Creative: %s", json.dumps(creative_payload, indent=2))
     creative_resp = requests.post(
@@ -322,7 +305,7 @@ async def create_campaign(req: Request):
         raise HTTPException(status_code=400, detail=extract_fb_error(creative_resp))
     creative_id = creative_resp.json()["id"]
 
-    # 8) Cria o Ad
+    # 8) Cria Ad
     ad_payload = {
         "name":         f"Ad {data.campaign_name}",
         "adset_id":     adset_id,
