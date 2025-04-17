@@ -113,9 +113,9 @@ class CampaignRequest(BaseModel):
     @field_validator("objective", mode="before")
     def map_objective(cls, v):
         m = {
-            "Vendas": "OUTCOME_SALES",
-            "Promover site/app": "OUTCOME_TRAFFIC",
-            "Leads": "OUTCOME_LEADS",
+            "Vendas":           "OUTCOME_SALES",
+            "Promover site/app":"OUTCOME_TRAFFIC",
+            "Leads":            "OUTCOME_LEADS",
             "Alcance de marca": "OUTCOME_AWARENESS"
         }
         return m.get(v, v)
@@ -142,7 +142,7 @@ async def create_campaign(req: Request):
     check_account_balance(data.account_id, data.token, total_cents)
 
     # 2) Cria campanha
-    camp = requests.post(
+    camp_resp = requests.post(
         f"https://graph.facebook.com/{FB_API_VERSION}/act_{data.account_id}/campaigns",
         json={
             "name": data.campaign_name,
@@ -152,9 +152,9 @@ async def create_campaign(req: Request):
             "special_ad_categories": []
         }
     )
-    if camp.status_code != 200:
-        raise HTTPException(status_code=400, detail=extract_fb_error(camp))
-    camp_id = camp.json()["id"]
+    if camp_resp.status_code != 200:
+        raise HTTPException(status_code=400, detail=extract_fb_error(camp_resp))
+    camp_id = camp_resp.json()["id"]
 
     # 3) Calcula datas e orçamento diário
     start_dt = datetime.strptime(data.initial_date, "%m/%d/%Y")
@@ -168,48 +168,54 @@ async def create_campaign(req: Request):
         rollback_campaign(camp_id, data.token)
         raise HTTPException(status_code=400, detail="Duração mínima de 24 horas")
 
-    # 4) Monta billing_event + optimization_goal
+    # 4) Define billing_event, optimization_goal e parâmetros específicos de LEAD_GENERATION
     if data.objective == "OUTCOME_AWARENESS":
-        opt_goal = "IMPRESSIONS"
+        opt_goal      = "IMPRESSIONS"
+        billing_event = "IMPRESSIONS"
     elif data.objective == "OUTCOME_LEADS":
-        opt_goal = "LEAD_GENERATION"
+        opt_goal      = "LEAD_GENERATION"
+        # Para lead ads: pagamos por impressões, e precisamos de destination_type e promoted_object (Page ID) :contentReference[oaicite:0]{index=0}
+        billing_event    = "IMPRESSIONS"
+        destination_type = "ON_AD"
+        promoted_object  = data.token  # substitua por page_id string
+        page_id          = get_page_id(data.token)
     else:
-        opt_goal = "LINK_CLICKS"
+        opt_goal      = "LINK_CLICKS"
+        billing_event = "LINK_CLICKS"
 
-    billing_event = opt_goal  # sempre igual ao optimization_goal
-
+    # Relação entre célula e ad set
     page_id = get_page_id(data.token)
-
-    # se lead gen, inclua promoted_object
-    promoted_object = {}
-    if opt_goal == "LEAD_GENERATION":
-        promoted_object = {"promoted_object": {"page_id": page_id}}
+    genders = {"male":[1], "female":[2]}.get(data.target_sex.lower(), [])
 
     # 5) Cria Ad Set
-    genders = {"male": [1], "female": [2]}.get(data.target_sex.lower(), [])
+    adset_payload = {
+        "name":              f"AdSet {data.campaign_name}",
+        "campaign_id":       camp_id,
+        "daily_budget":      daily,
+        "billing_event":     billing_event,
+        "optimization_goal": opt_goal,
+        "bid_amount":        100,
+        "targeting": {
+            "geo_locations":      {"countries": GLOBAL_COUNTRIES},
+            "genders":            genders,
+            "age_min":            data.target_age,
+            "age_max":            data.target_age,
+            "publisher_platforms": PUBLISHER_PLATFORMS
+        },
+        "start_time":    int(start_dt.timestamp()),
+        "end_time":      int(end_dt.timestamp()),
+        "access_token":  data.token
+    }
+    if data.objective == "OUTCOME_LEADS":
+        adset_payload.update({
+            "destination_type":  destination_type,
+            "promoted_object":   page_id,
+            "status":            "ACTIVE"
+        })
+
     adset_resp = requests.post(
         f"https://graph.facebook.com/{FB_API_VERSION}/act_{data.account_id}/adsets",
-        json={
-            "name":              f"AdSet {data.campaign_name}",
-            "campaign_id":       camp_id,
-            "daily_budget":      daily,
-            "billing_event":     billing_event,
-            "optimization_goal": opt_goal,
-            "bid_amount":        100,
-            "targeting": {
-                "geo_locations":      {"countries": GLOBAL_COUNTRIES},
-                "genders":            genders,
-                "age_min":            data.target_age,
-                "age_max":            data.target_age,
-                "publisher_platforms": PUBLISHER_PLATFORMS
-            },
-            "start_time":        int(start_dt.timestamp()),
-            "end_time":          int(end_dt.timestamp()),
-            "dsa_beneficiary":   page_id,
-            "dsa_payor":         page_id,
-            **promoted_object,
-            "access_token":      data.token
-        }
+        json=adset_payload
     )
     if adset_resp.status_code != 200:
         rollback_campaign(camp_id, data.token)
@@ -228,17 +234,16 @@ async def create_campaign(req: Request):
             rollback_campaign(camp_id, data.token)
             raise HTTPException(status_code=400, detail=str(e))
 
-    # 7) Monta o creative_spec
+    # 7) Monta creative_spec (igual ao código anterior)
     default_link    = data.content or "https://www.adstock.ai"
     default_message = data.description
-
     if video_id:
         creative_spec = {
             "video_data": {
-                "video_id":          video_id,
-                "message":           default_message,
-                "image_url":         thumbnail,
-                "call_to_action":    {"type":"LEARN_MORE", "value":{"link":default_link}}
+                "video_id":       video_id,
+                "message":        default_message,
+                "image_url":      thumbnail,
+                "call_to_action": {"type":"LEARN_MORE","value":{"link":default_link}}
             }
         }
     elif data.image.strip():
@@ -251,10 +256,10 @@ async def create_campaign(req: Request):
         }
     elif any(u.strip() for u in data.carrossel):
         child = [
-            {"link":default_link, "picture":u.strip(), "message":default_message}
+            {"link":default_link,"picture":u.strip(),"message":default_message}
             for u in data.carrossel if u.strip()
         ]
-        creative_spec = {"link_data": {"child_attachments":child, "message":default_message, "link":default_link}}
+        creative_spec = {"link_data": {"child_attachments":child,"message":default_message,"link":default_link}}
     else:
         creative_spec = {
             "link_data": {
@@ -264,13 +269,13 @@ async def create_campaign(req: Request):
             }
         }
 
-    # 8) Cria Ad Creative
+    # 8) Cria Ad Creative (igual ao código anterior)
     creative = requests.post(
         f"https://graph.facebook.com/{FB_API_VERSION}/act_{data.account_id}/adcreatives",
         json={
-            "name": f"Creative {data.campaign_name}",
+            "name":              f"Creative {data.campaign_name}",
             "object_story_spec": {"page_id": page_id, **creative_spec},
-            "access_token": data.token
+            "access_token":      data.token
         }
     )
     if creative.status_code != 200:
@@ -282,10 +287,10 @@ async def create_campaign(req: Request):
     ad = requests.post(
         f"https://graph.facebook.com/{FB_API_VERSION}/act_{data.account_id}/ads",
         json={
-            "name":      f"Ad {data.campaign_name}",
-            "adset_id":  adset_id,
-            "creative":  {"creative_id": creative_id},
-            "status":    "ACTIVE",
+            "name":         f"Ad {data.campaign_name}",
+            "adset_id":     adset_id,
+            "creative":     {"creative_id": creative_id},
+            "status":       "ACTIVE",
             "access_token": data.token
         }
     )
