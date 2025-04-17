@@ -4,7 +4,7 @@ import os
 import time
 import json
 import requests
-from datetime import datetime, timedelta
+from datetime import datetime
 from fastapi import FastAPI, HTTPException, Request, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.exceptions import RequestValidationError
@@ -170,15 +170,17 @@ async def create_campaign(req: Request):
     check_account_balance(data.account_id, data.token, total_cents)
 
     # 2) Cria campanha
+    camp_payload = {
+        "name":                  data.campaign_name,
+        "objective":             data.objective,
+        "status":                "ACTIVE",
+        "access_token":          data.token,
+        "special_ad_categories": []
+    }
+    logger.debug("Payload Campaign: %s", json.dumps(camp_payload, indent=2))
     camp_resp = requests.post(
         f"https://graph.facebook.com/{FB_API_VERSION}/act_{data.account_id}/campaigns",
-        json={
-            "name":                 data.campaign_name,
-            "objective":            data.objective,
-            "status":               "ACTIVE",
-            "access_token":         data.token,
-            "special_ad_categories": []
-        }
+        json=camp_payload
     )
     if camp_resp.status_code != 200:
         raise HTTPException(status_code=400, detail=extract_fb_error(camp_resp))
@@ -196,13 +198,11 @@ async def create_campaign(req: Request):
         rollback_campaign(campaign_id, data.token)
         raise HTTPException(status_code=400, detail="Orçamento diário deve ser ≥ $5.76")
 
-    # define start_time/end_time ajustados
     now_ts     = int(time.time())
-    desired_dur= days * 86400
     start_ts   = int(start_dt.timestamp())
     if start_ts < now_ts:
-        start_ts = now_ts + 60   # começa em 1 min
-    end_ts     = start_ts + desired_dur
+        start_ts = now_ts + 60
+    end_ts     = start_ts + days * 86400
 
     opt_goal      = OBJECTIVE_TO_OPT_GOAL.get(data.objective, "LINK_CLICKS")
     billing_event = OBJECTIVE_TO_BILLING_EVENT.get(data.objective, "IMPRESSIONS")
@@ -227,8 +227,6 @@ async def create_campaign(req: Request):
         "end_time":           end_ts,
         "access_token":       data.token
     }
-
-    # promoted_object para Leads e Sales
     if data.objective == "OUTCOME_LEADS":
         adset_payload["promoted_object"] = {"page_id": page_id}
     elif data.objective == "OUTCOME_SALES":
@@ -240,14 +238,14 @@ async def create_campaign(req: Request):
             "custom_event_type":"PURCHASE"
         }
 
-    # 4) Cria Ad Set com debug extra
+    # 4) Cria Ad Set
+    logger.debug("Payload AdSet: %s", json.dumps(adset_payload, indent=2))
     resp_adset = requests.post(
         f"https://graph.facebook.com/{FB_API_VERSION}/act_{data.account_id}/adsets",
         json=adset_payload
     )
     if resp_adset.status_code != 200:
-        logger.error("Falha AdSet payload:")
-        logger.error(json.dumps(adset_payload, indent=2))
+        logger.error("Falha AdSet payload: %s", json.dumps(adset_payload, indent=2))
         logger.error("Facebook response: %s %s", resp_adset.status_code, resp_adset.text)
         rollback_campaign(campaign_id, data.token)
         raise HTTPException(status_code=400, detail=extract_fb_error(resp_adset))
@@ -257,9 +255,8 @@ async def create_campaign(req: Request):
     video_id  = None
     thumbnail = None
     if data.video.strip():
-        url = data.video.strip().rstrip(";,")
         try:
-            video_id  = upload_video_to_fb(data.account_id, data.token, url)
+            video_id  = upload_video_to_fb(data.account_id, data.token, data.video.strip())
             thumbnail = fetch_video_thumbnail(video_id, data.token)
         except Exception as e:
             rollback_campaign(campaign_id, data.token)
@@ -310,13 +307,15 @@ async def create_campaign(req: Request):
         }
 
     # 7) Cria Ad Creative
+    creative_payload = {
+        "name": f"Creative {data.campaign_name}",
+        "object_story_spec": {"page_id": page_id, **creative_spec},
+        "access_token":      data.token
+    }
+    logger.debug("Payload Creative: %s", json.dumps(creative_payload, indent=2))
     creative_resp = requests.post(
         f"https://graph.facebook.com/{FB_API_VERSION}/act_{data.account_id}/adcreatives",
-        json={
-            "name":              f"Creative {data.campaign_name}",
-            "object_story_spec": {"page_id": page_id, **creative_spec},
-            "access_token":      data.token
-        }
+        json=creative_payload
     )
     if creative_resp.status_code != 200:
         rollback_campaign(campaign_id, data.token)
@@ -324,15 +323,17 @@ async def create_campaign(req: Request):
     creative_id = creative_resp.json()["id"]
 
     # 8) Cria o Ad
+    ad_payload = {
+        "name":         f"Ad {data.campaign_name}",
+        "adset_id":     adset_id,
+        "creative":     {"creative_id": creative_id},
+        "status":       "ACTIVE",
+        "access_token": data.token
+    }
+    logger.debug("Payload Ad: %s", json.dumps(ad_payload, indent=2))
     ad_resp = requests.post(
         f"https://graph.facebook.com/{FB_API_VERSION}/act_{data.account_id}/ads",
-        json={
-            "name":         f"Ad {data.campaign_name}",
-            "adset_id":     adset_id,
-            "creative":     {"creative_id": creative_id},
-            "status":       "ACTIVE",
-            "access_token": data.token
-        }
+        json=ad_payload
     )
     if ad_resp.status_code != 200:
         rollback_campaign(campaign_id, data.token)
