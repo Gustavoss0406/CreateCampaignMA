@@ -187,19 +187,18 @@ async def create_campaign(req: Request):
         raise HTTPException(status_code=400, detail=extract_fb_error(camp_resp))
     camp_id = camp_resp.json()["id"]
 
-    # 3) Prepara Ad Set
+    # 3) Cálculo do orçamento diário e Ad Set
     start_dt = datetime.strptime(data.initial_date, "%m/%d/%Y")
     end_dt   = datetime.strptime(data.final_date,   "%m/%d/%Y")
-    days     = max((end_dt - start_dt).days, 1)
-    daily    = total_cents // days
+    days_diff = (end_dt - start_dt).days
+    days = max(days_diff, 1)
+    daily = total_cents // days
+
+    logger.debug(f"Campanha vai durar {days_diff} dia(s); usando {days} para cálculo de orçamento")
+    # Apenas verificamos valor mínimo por dia, sem block de duração
     if daily < 576:
-        logger.error("Orçamento diário inválido")
         rollback_campaign(camp_id, data.token)
         raise HTTPException(status_code=400, detail="Orçamento diário deve ser ≥ $5.76")
-    if (end_dt - start_dt) < timedelta(hours=24):
-        logger.error("Duração da campanha inválida")
-        rollback_campaign(camp_id, data.token)
-        raise HTTPException(status_code=400, detail="Duração mínima de 24h")
 
     opt_goal      = OBJECTIVE_TO_OPT_GOAL.get(data.objective, "LINK_CLICKS")
     billing_event = OBJECTIVE_TO_BILLING_EVENT.get(data.objective, "IMPRESSIONS")
@@ -207,12 +206,12 @@ async def create_campaign(req: Request):
     page_id       = get_page_id(data.token)
 
     adset_payload = {
-        "name":              f"AdSet {data.campaign_name}",
-        "campaign_id":       camp_id,
-        "daily_budget":      daily,
-        "billing_event":     billing_event,
-        "optimization_goal": opt_goal,
-        "bid_amount":        100,
+        "name":               f"AdSet {data.campaign_name}",
+        "campaign_id":        camp_id,
+        "daily_budget":       daily,
+        "billing_event":      billing_event,
+        "optimization_goal":  opt_goal,
+        "bid_amount":         100,
         "targeting": {
             "geo_locations": {"countries": GLOBAL_COUNTRIES},
             "genders":       genders,
@@ -220,9 +219,9 @@ async def create_campaign(req: Request):
             "age_max":       data.target_age,
             "publisher_platforms": PUBLISHER_PLATFORMS
         },
-        "start_time":        int(start_dt.timestamp()),
-        "end_time":          int(end_dt.timestamp()),
-        "access_token":      data.token
+        "start_time":         int(start_dt.timestamp()),
+        "end_time":           int(end_dt.timestamp()),
+        "access_token":       data.token
     }
 
     # promoted_object para Leads e Sales
@@ -230,9 +229,8 @@ async def create_campaign(req: Request):
         adset_payload["promoted_object"] = {"page_id": page_id}
     elif data.objective == "OUTCOME_SALES":
         if not data.pixel_id:
-            logger.error("pixel_id ausente para OUTCOME_SALES")
             rollback_campaign(camp_id, data.token)
-            raise HTTPException(status_code=400, detail="Campo pixel_id é obrigatório para vendas")
+            raise HTTPException(status_code=400, detail="pixel_id obrigatório para vendas")
         adset_payload["promoted_object"] = {
             "pixel_id":         data.pixel_id,
             "custom_event_type":"PURCHASE"
@@ -243,10 +241,8 @@ async def create_campaign(req: Request):
         json=adset_payload
     )
     if adset_resp.status_code != 200:
-        err = extract_fb_error(adset_resp)
-        logger.error(f"Erro ao criar AdSet: {err}")
         rollback_campaign(camp_id, data.token)
-        raise HTTPException(status_code=400, detail=err)
+        raise HTTPException(status_code=400, detail=extract_fb_error(adset_resp))
     adset_id = adset_resp.json()["id"]
 
     # 4) Upload vídeo + thumbnail (se houver)
@@ -258,7 +254,6 @@ async def create_campaign(req: Request):
             video_id  = upload_video_to_fb(data.account_id, data.token, url)
             thumbnail = fetch_video_thumbnail(video_id, data.token)
         except Exception as e:
-            logger.exception("Erro no upload de vídeo")
             rollback_campaign(camp_id, data.token)
             raise HTTPException(status_code=400, detail=str(e))
 
@@ -316,10 +311,8 @@ async def create_campaign(req: Request):
         }
     )
     if creative_resp.status_code != 200:
-        err = extract_fb_error(creative_resp)
-        logger.error(f"Erro ao criar Creative: {err}")
         rollback_campaign(camp_id, data.token)
-        raise HTTPException(status_code=400, detail=err)
+        raise HTTPException(status_code=400, detail=extract_fb_error(creative_resp))
     creative_id = creative_resp.json()["id"]
 
     # 7) Cria Ad final
@@ -334,21 +327,21 @@ async def create_campaign(req: Request):
         }
     )
     if ad_resp.status_code != 200:
-        err = extract_fb_error(ad_resp)
-        logger.error(f"Erro ao criar Ad: {err}")
         rollback_campaign(camp_id, data.token)
-        raise HTTPException(status_code=400, detail=err)
+        raise HTTPException(status_code=400, detail=extract_fb_error(ad_resp))
     ad_id = ad_resp.json()["id"]
 
     # 8) Retorno resumido
     return {
-        "status":       "success",
-        "campaign_id":  camp_id,
-        "ad_set_id":    adset_id,
-        "creative_id":  creative_id,
-        "ad_id":        ad_id,
-        "campaign_link": f"https://www.facebook.com/adsmanager/manage/campaigns"
-                         f"?act={data.account_id}&campaign_ids={camp_id}"
+        "status":        "success",
+        "campaign_id":   camp_id,
+        "ad_set_id":     adset_id,
+        "creative_id":   creative_id,
+        "ad_id":         ad_id,
+        "campaign_link": (
+            "https://www.facebook.com/adsmanager/manage/campaigns"
+            f"?act={data.account_id}&campaign_ids={camp_id}"
+        )
     }
 
 if __name__ == "__main__":
