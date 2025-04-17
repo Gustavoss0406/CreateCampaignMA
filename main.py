@@ -40,6 +40,7 @@ OBJECTIVE_TO_OPT_GOAL = {
     "OUTCOME_TRAFFIC":   "LINK_CLICKS",
     "OUTCOME_LEADS":     "LEAD_GENERATION",
     "OUTCOME_SALES":     "OFFSITE_CONVERSIONS",
+    "PAGE_LIKES":        "PAGE_LIKES",
 }
 
 OBJECTIVE_TO_BILLING_EVENT = {
@@ -47,6 +48,7 @@ OBJECTIVE_TO_BILLING_EVENT = {
     "OUTCOME_TRAFFIC":   "LINK_CLICKS",
     "OUTCOME_LEADS":     "IMPRESSIONS",
     "OUTCOME_SALES":     "IMPRESSIONS",
+    "PAGE_LIKES":        "PAGE_LIKES",
 }
 
 CTA_MAP = {
@@ -54,6 +56,7 @@ CTA_MAP = {
     "OUTCOME_TRAFFIC":   {"type": "LEARN_MORE", "value": {"link": ""}},
     "OUTCOME_LEADS":     {"type": "SIGN_UP",    "value": {"link": ""}},
     "OUTCOME_SALES":     {"type": "SHOP_NOW",   "value": {"link": ""}},
+    "PAGE_LIKES":        {"type": "LIKE_PAGE",  "value": {"page": ""}},
 }
 
 # ─── Helpers ────────────────────────────────────────────────────────────────────
@@ -144,7 +147,8 @@ class CampaignRequest(BaseModel):
             "Vendas":            "OUTCOME_SALES",
             "Promover site/app": "OUTCOME_TRAFFIC",
             "Leads":             "OUTCOME_LEADS",
-            "Alcance de marca":  "OUTCOME_AWARENESS",
+            "Alcance de marca":  "PAGE_LIKES",       # Agora vira PAGE_LIKES
+            "Seguidores":        "PAGE_LIKES",
         }
         return m.get(v, v)
 
@@ -184,31 +188,27 @@ async def create_campaign(req: Request):
         raise HTTPException(status_code=400, detail=extract_fb_error(camp_resp))
     campaign_id = camp_resp.json()["id"]
 
-    # 3) Prepara datas e orçamentos
+    # 3) Datas e orçamento diário
     start_dt  = datetime.strptime(data.initial_date, "%m/%d/%Y")
     end_dt    = datetime.strptime(data.final_date,   "%m/%d/%Y")
     days_diff = (end_dt - start_dt).days
     days      = max(days_diff, 1)
     daily     = total_cents // days
-    logger.debug(f"Dias planejados: {days_diff} → usando {days} → budget diário: {daily} cents")
-
+    logger.debug(f"Dias planejados: {days_diff} → budget diário: {daily} cents")
     if daily < 576:
         rollback_campaign(campaign_id, data.token)
         raise HTTPException(status_code=400, detail="Orçamento diário deve ser ≥ $5.76")
 
-    # define start_time/end_time ajustados
     now_ts     = int(time.time())
-    desired_dur= days * 86400
-    start_ts   = int(start_dt.timestamp())
-    if start_ts < now_ts:
-        start_ts = now_ts + 60   # começa em 1 min
-    end_ts     = start_ts + desired_dur
+    start_ts   = max(int(start_dt.timestamp()), now_ts + 60)
+    end_ts     = start_ts + days * 86400
 
-    opt_goal      = OBJECTIVE_TO_OPT_GOAL.get(data.objective, "LINK_CLICKS")
-    billing_event = OBJECTIVE_TO_BILLING_EVENT.get(data.objective, "IMPRESSIONS")
+    opt_goal      = OBJECTIVE_TO_OPT_GOAL.get(data.objective)
+    billing_event = OBJECTIVE_TO_BILLING_EVENT.get(data.objective)
     genders       = {"male":[1], "female":[2]}.get(data.target_sex.lower(), [])
     page_id       = get_page_id(data.token)
 
+    # 4) Monta Ad Set
     adset_payload = {
         "name":               f"AdSet {data.campaign_name}",
         "campaign_id":        campaign_id,
@@ -228,48 +228,61 @@ async def create_campaign(req: Request):
         "access_token":       data.token
     }
 
-    # promoted_object para Leads e Sales
-    if data.objective == "OUTCOME_LEADS":
-        adset_payload["promoted_object"] = {"page_id": page_id}
-    elif data.objective == "OUTCOME_SALES":
-        if not data.pixel_id:
+    # promoted_object apenas para Leads e Sales
+    if data.objective in ["OUTCOME_LEADS", "OUTCOME_SALES"]:
+        prom = {"page_id": page_id} if data.objective=="OUTCOME_LEADS" else {"pixel_id": data.pixel_id, "custom_event_type":"PURCHASE"}
+        if data.objective=="OUTCOME_SALES" and not data.pixel_id:
             rollback_campaign(campaign_id, data.token)
             raise HTTPException(status_code=400, detail="pixel_id obrigatório")
-        adset_payload["promoted_object"] = {
-            "pixel_id":         data.pixel_id,
-            "custom_event_type":"PURCHASE"
-        }
+        adset_payload["promoted_object"] = prom
 
-    # 4) Cria Ad Set com debug extra
     resp_adset = requests.post(
         f"https://graph.facebook.com/{FB_API_VERSION}/act_{data.account_id}/adsets",
         json=adset_payload
     )
     if resp_adset.status_code != 200:
-        logger.error("Falha AdSet payload:")
-        logger.error(json.dumps(adset_payload, indent=2))
-        logger.error("Facebook response: %s %s", resp_adset.status_code, resp_adset.text)
+        logger.error("Falha AdSet payload:\n%s", json.dumps(adset_payload, indent=2))
         rollback_campaign(campaign_id, data.token)
         raise HTTPException(status_code=400, detail=extract_fb_error(resp_adset))
     adset_id = resp_adset.json()["id"]
 
-    # 5) Upload vídeo + thumbnail (se houver)
+    # 5) Vídeo + thumbnail
     video_id  = None
     thumbnail = None
     if data.video.strip():
-        url = data.video.strip().rstrip(";,")
         try:
-            video_id  = upload_video_to_fb(data.account_id, data.token, url)
+            video_id  = upload_video_to_fb(data.account_id, data.token, data.video.strip())
             thumbnail = fetch_video_thumbnail(video_id, data.token)
         except Exception as e:
             rollback_campaign(campaign_id, data.token)
             raise HTTPException(status_code=400, detail=str(e))
 
-    # 6) Monta creative_spec
+    # 6) Monta creative_spec com suporte a PAGE_LIKES
     default_link    = data.content or "https://www.adstock.ai"
     default_message = data.description
 
-    if video_id:
+    if data.objective == "PAGE_LIKES":
+        cta = CTA_MAP["PAGE_LIKES"].copy()
+        cta["value"]["page"] = page_id
+        if video_id:
+            creative_spec = {
+                "video_data": {
+                    "video_id":       video_id,
+                    "message":        default_message,
+                    "image_url":      thumbnail,
+                    "call_to_action": cta
+                }
+            }
+        else:
+            creative_spec = {
+                "link_data": {
+                    "message":        default_message,
+                    "link":           default_link,
+                    "picture":        data.image.strip() or "https://via.placeholder.com/1200x628.png?text=Ad+Placeholder",
+                    "call_to_action": cta
+                }
+            }
+    elif video_id:
         cta = CTA_MAP.get(data.objective, {}).copy()
         cta["value"]["link"] = default_link
         creative_spec = {
@@ -309,7 +322,7 @@ async def create_campaign(req: Request):
             }
         }
 
-    # 7) Cria Ad Creative
+    # 7) Cria Creative
     creative_resp = requests.post(
         f"https://graph.facebook.com/{FB_API_VERSION}/act_{data.account_id}/adcreatives",
         json={
