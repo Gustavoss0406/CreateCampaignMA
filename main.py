@@ -55,7 +55,7 @@ CTA_MAP = {
     "OUTCOME_AWARENESS": {"type": "LEARN_MORE", "value": {"link": ""}},
     "OUTCOME_TRAFFIC":   {"type": "LEARN_MORE", "value": {"link": ""}},
     "OUTCOME_LEADS":     {"type": "SIGN_UP",    "value": {"link": ""}},
-    "OUTCOME_SALES":     {"type": "SHOP_NOW",    "value": {"link": ""}},
+    "OUTCOME_SALES":     {"type": "SHOP_NOW",   "value": {"link": ""}},
 }
 
 # ─── Helpers ────────────────────────────────────────────────────────────────────
@@ -93,7 +93,7 @@ def fetch_video_thumbnail(video_id: str, token: str) -> str:
             items = resp.json().get("data", [])
             if items:
                 return items[0]["uri"]
-        logger.debug("Thumbnail não disponível ainda, aguardando...")
+        logger.debug("Thumbnail ainda não disponível, aguardando...")
         time.sleep(2)
     raise Exception("Não foi possível obter thumbnail do vídeo")
 
@@ -154,7 +154,7 @@ class CampaignRequest(BaseModel):
     @field_validator("budget", mode="before")
     def parse_budget(cls, v):
         if isinstance(v, str):
-            return float(v.replace("$","").replace(",","."))
+            return float(v.replace("$", "").replace(",", "."))
         return v
 
 @app.exception_handler(RequestValidationError)
@@ -176,10 +176,10 @@ async def create_campaign(req: Request):
     camp_resp = requests.post(
         f"https://graph.facebook.com/{FB_API_VERSION}/act_{data.account_id}/campaigns",
         json={
-            "name": data.campaign_name,
-            "objective": data.objective,
-            "status": "ACTIVE",
-            "access_token": data.token,
+            "name":                data.campaign_name,
+            "objective":           data.objective,
+            "status":              "ACTIVE",
+            "access_token":        data.token,
             "special_ad_categories": []
         }
     )
@@ -187,18 +187,14 @@ async def create_campaign(req: Request):
         raise HTTPException(status_code=400, detail=extract_fb_error(camp_resp))
     camp_id = camp_resp.json()["id"]
 
-    # 3) Cálculo do orçamento diário e Ad Set
-    start_dt = datetime.strptime(data.initial_date, "%m/%d/%Y")
-    end_dt   = datetime.strptime(data.final_date,   "%m/%d/%Y")
-    days_diff = (end_dt - start_dt).days
-    days = max(days_diff, 1)
-    daily = total_cents // days
+    # 3) Cálculo de orçamento diário e criação do Ad Set (sem checar duração mínima)
+    start_dt   = datetime.strptime(data.initial_date, "%m/%d/%Y")
+    end_dt     = datetime.strptime(data.final_date,   "%m/%d/%Y")
+    days_diff  = (end_dt - start_dt).days
+    days       = max(days_diff, 1)
+    daily      = total_cents // days
 
-    logger.debug(f"Campanha vai durar {days_diff} dia(s); usando {days} para cálculo de orçamento")
-    # Apenas verificamos valor mínimo por dia, sem block de duração
-    if daily < 576:
-        rollback_campaign(camp_id, data.token)
-        raise HTTPException(status_code=400, detail="Orçamento diário deve ser ≥ $5.76")
+    logger.debug(f"Campanha dura {days_diff} dia(s); usando {days} dia(s) para budget → {daily} centavos/dia")
 
     opt_goal      = OBJECTIVE_TO_OPT_GOAL.get(data.objective, "LINK_CLICKS")
     billing_event = OBJECTIVE_TO_BILLING_EVENT.get(data.objective, "IMPRESSIONS")
@@ -245,7 +241,7 @@ async def create_campaign(req: Request):
         raise HTTPException(status_code=400, detail=extract_fb_error(adset_resp))
     adset_id = adset_resp.json()["id"]
 
-    # 4) Upload vídeo + thumbnail (se houver)
+    # 4) Upload de vídeo + thumbnail (se houver)
     video_id  = None
     thumbnail = None
     if data.video.strip():
@@ -315,14 +311,14 @@ async def create_campaign(req: Request):
         raise HTTPException(status_code=400, detail=extract_fb_error(creative_resp))
     creative_id = creative_resp.json()["id"]
 
-    # 7) Cria Ad final
+    # 7) Cria o Ad final
     ad_resp = requests.post(
         f"https://graph.facebook.com/{FB_API_VERSION}/act_{data.account_id}/ads",
         json={
-            "name":        f"Ad {data.campaign_name}",
-            "adset_id":    adset_id,
-            "creative":    {"creative_id": creative_id},
-            "status":      "ACTIVE",
+            "name":         f"Ad {data.campaign_name}",
+            "adset_id":     adset_id,
+            "creative":     {"creative_id": creative_id},
+            "status":       "ACTIVE",
             "access_token": data.token
         }
     )
